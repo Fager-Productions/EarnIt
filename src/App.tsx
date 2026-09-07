@@ -2,534 +2,62 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { calculateUnpaidTotalWithInterest, type InterestPeriod } from './lib/coreLogic'
 import './App.css'
-
-type PeriodType = 'week' | 'month'
-type UserRole = 'child' | 'parent'
-type HistoryFilter = 'all' | PeriodType
-type AppTab = 'overview' | 'tasks' | 'logs' | 'history' | 'settings' | 'account'
-type PaymentStatusFilter = 'all' | 'unpaid' | 'paid'
-
-type MandatoryTask = {
-  id: string
-  name: string
-  requiredCount: number
-}
-
-type BonusTask = {
-  id: string
-  name: string
-  points: number
-}
-
-type PenaltyTask = {
-  id: string
-  name: string
-  points: number
-}
-
-type RewardLevel = {
-  id: string
-  name: string
-  minPoints: number
-  extraAmount: number
-}
-
-type ParentAccount = {
-  id: string
-  username: string
-  passwordHash: string
-  passwordSalt: string
-  passwordIterations: number
-  mustChangePassword: boolean
-  createdAt: string
-}
-
-type Entry = {
-  id: string
-  taskType: 'mandatory' | 'bonus' | 'penalty'
-  taskId: string
-  timestamp: string
-}
-
-type Settlement = {
-  id: string
-  periodKey: string
-  periodLabel: string
-  periodType: PeriodType
-  mandatoryMet: boolean
-  basePaid: number
-  extraPaid: number
-  totalPaid: number
-  pointsEarned: number
-  pointsAvailable: number
-  pointsSpent: number
-  carryOut: number
-  reachedLevelName: string
-  createdAt: string
-  withdrawnAmount: number
-  paidAt: string | null
-}
-
-type ChildProfile = {
-  id: string
-  childName: string
-  periodType: PeriodType
-  baseAllowance: number
-  childPinHash: string | null
-  childPinSalt: string | null
-  childPinIterations: number
-  childPinPlain: string | null
-  mandatoryTasks: MandatoryTask[]
-  bonusTasks: BonusTask[]
-  penaltyTasks: PenaltyTask[]
-  rewardLevels: RewardLevel[]
-  historyFilter: HistoryFilter
-  entries: Entry[]
-  settlements: Settlement[]
-  carryPoints: number
-}
-
-type ParentSettings = {
-  passwordHash: string | null
-  passwordSalt: string | null
-  passwordIterations: number
-  childPinHash: string | null
-  childPinSalt: string | null
-  childPinIterations: number
-  penaltyEnabled: boolean
-  interestRatePct: number
-  interestPeriod: InterestPeriod
-  parentAccounts: ParentAccount[]
-  legacyPin?: string
-}
-
-type AppState = {
-  profiles: ChildProfile[]
-  activeChildId: string
-  parentSettings: ParentSettings
-}
-
-type DeferredInstallPromptEvent = Event & {
-  prompt: () => Promise<void>
-  userChoice: Promise<{ outcome: 'accepted' | 'dismissed'; platform: string }>
-}
-
-const STORAGE_KEY = 'ukelonn-app-state-v2'
-const AUTH_SESSION_KEY = 'ukelonn-parent-session-v1'
-const AUTH_ITERATIONS = 120000
-const AUTH_LOCK_MAX_ATTEMPTS = 5
-const AUTH_LOCK_MS = 30000
-const AUTH_IDLE_TIMEOUT_MS = 15 * 60 * 1000
-const CHILD_AUTH_ENDPOINT = import.meta.env.VITE_CHILD_AUTH_ENDPOINT?.trim() || ''
-const ADMIN_USERNAME = 'Fager'
-const ADMIN_PASSWORD = 'fager5262'
-const DEFAULT_CHILD_NAME = 'Barnets navn'
-
-const EMPTY_CHILD_PROFILE: ChildProfile = {
-  id: '__empty-child__',
-  childName: 'Ingen barn',
-  periodType: 'week',
-  baseAllowance: 0,
-  childPinHash: null,
-  childPinSalt: null,
-  childPinIterations: AUTH_ITERATIONS,
-  childPinPlain: null,
-  mandatoryTasks: [],
-  bonusTasks: [],
-  penaltyTasks: [],
-  rewardLevels: [],
-  historyFilter: 'all',
-  entries: [],
-  settlements: [],
-  carryPoints: 0,
-}
-
-function createRandomHex(bytes = 16): string {
-  const values = crypto.getRandomValues(new Uint8Array(bytes))
-  return Array.from(values)
-    .map((value) => value.toString(16).padStart(2, '0'))
-    .join('')
-}
-
-async function derivePasswordHash(
-  password: string,
-  salt: string,
-  iterations = AUTH_ITERATIONS,
-): Promise<string> {
-  const encoder = new TextEncoder()
-  const material = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, [
-    'deriveBits',
-  ])
-  const bits = await crypto.subtle.deriveBits(
-    {
-      name: 'PBKDF2',
-      salt: encoder.encode(salt),
-      iterations,
-      hash: 'SHA-256',
-    },
-    material,
-    256,
-  )
-  const bytes = new Uint8Array(bits)
-  return Array.from(bytes)
-    .map((value) => value.toString(16).padStart(2, '0'))
-    .join('')
-}
-
-function isValidChildCode(value: string): boolean {
-  const sanitized = value.trim()
-  return /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z\d]{8,}$/.test(sanitized)
-}
-
-function createChildCodeCandidate(length = 10): string {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
-  const digits = '23456789'
-  const all = `${alphabet}${digits}`
-
-  while (true) {
-    let candidate = ''
-    for (let index = 0; index < length; index += 1) {
-      candidate += all[Math.floor(Math.random() * all.length)]
-    }
-    if (/[A-Za-z]/.test(candidate) && /\d/.test(candidate)) {
-      return candidate
-    }
-  }
-}
-
-function isValidParentPassword(value: string): boolean {
-  const sanitized = value.trim()
-  return sanitized.length >= 8 && /\d/.test(sanitized) && /[^A-Za-z0-9]/.test(sanitized)
-}
-
-function getParentPasswordStrengthLabel(value: string): string {
-  const sanitized = value.trim()
-  const score = [
-    sanitized.length >= 8,
-    /\d/.test(sanitized),
-    /[^A-Za-z0-9]/.test(sanitized),
-    /[A-Z]/.test(sanitized),
-  ].filter(Boolean).length
-  if (score >= 4) {
-    return 'Sterkt'
-  }
-  if (score >= 3) {
-    return 'Bra'
-  }
-  if (score >= 2) {
-    return 'Svakt'
-  }
-  return 'Veldig svakt'
-}
-
-async function authenticateChildCodeWithBackend(code: string): Promise<string> {
-  const response = await fetch(CHILD_AUTH_ENDPOINT, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ code }),
-  })
-
-  if (!response.ok) {
-    throw new Error('Child backend auth failed')
-  }
-
-  const payload = (await response.json()) as { childId?: string }
-  if (!payload.childId) {
-    throw new Error('Missing childId from backend')
-  }
-  return payload.childId
-}
-
-function createDefaultProfile(name = DEFAULT_CHILD_NAME): ChildProfile {
-  return {
-    id: crypto.randomUUID(),
-    childName: name,
-    periodType: 'week',
-    baseAllowance: 0,
-    childPinHash: null,
-    childPinSalt: null,
-    childPinIterations: AUTH_ITERATIONS,
-    childPinPlain: null,
-    mandatoryTasks: [],
-    bonusTasks: [],
-    penaltyTasks: [],
-    rewardLevels: [],
-    historyFilter: 'all',
-    entries: [],
-    settlements: [],
-    carryPoints: 0,
-  }
-}
-
-const initialProfile = createDefaultProfile(DEFAULT_CHILD_NAME)
-const initialState: AppState = {
-  profiles: [initialProfile],
-  activeChildId: initialProfile.id,
-  parentSettings: {
-    passwordHash: null,
-    passwordSalt: null,
-    passwordIterations: AUTH_ITERATIONS,
-    childPinHash: null,
-    childPinSalt: null,
-    childPinIterations: AUTH_ITERATIONS,
-    penaltyEnabled: false,
-    interestRatePct: 0,
-    interestPeriod: 'month',
-    parentAccounts: [],
-    legacyPin: '1234',
-  },
-}
-
-function safeNumber(value: string, fallback = 0): number {
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : fallback
-}
-
-function startOfWeek(input: Date): Date {
-  const d = new Date(input)
-  const day = d.getDay()
-  const diff = day === 0 ? -6 : 1 - day
-  d.setDate(d.getDate() + diff)
-  d.setHours(0, 0, 0, 0)
-  return d
-}
-
-function getIsoWeekKey(date: Date): string {
-  const weekStart = startOfWeek(date)
-  const yearStart = startOfWeek(new Date(weekStart.getFullYear(), 0, 4))
-  const days = Math.floor((weekStart.getTime() - yearStart.getTime()) / 86400000)
-  const week = Math.floor(days / 7) + 1
-  return `${weekStart.getFullYear()}-W${String(week).padStart(2, '0')}`
-}
-
-function getMonthKey(date: Date): string {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
-}
-
-function getPeriodKey(date: Date, periodType: PeriodType): string {
-  return periodType === 'week' ? getIsoWeekKey(date) : getMonthKey(date)
-}
-
-function getPeriodLabel(periodKey: string, periodType: PeriodType): string {
-  if (periodType === 'week') {
-    return `Uke ${periodKey.split('-W')[1]} (${periodKey.split('-W')[0]})`
-  }
-  const [year, month] = periodKey.split('-')
-  return `${month}.${year}`
-}
-
-function getPeriodStartDate(periodKey: string, periodType: PeriodType): Date {
-  if (periodType === 'month') {
-    const [year, month] = periodKey.split('-').map((value) => Number(value))
-    return new Date(year, month - 1, 1)
-  }
-
-  const [yearText, weekText] = periodKey.split('-W')
-  const year = Number(yearText)
-  const week = Number(weekText)
-  const jan4 = new Date(year, 0, 4)
-  const weekOneStart = startOfWeek(jan4)
-  const date = new Date(weekOneStart)
-  date.setDate(weekOneStart.getDate() + (week - 1) * 7)
-  return date
-}
-
-function formatDateRangeLabel(date: Date, periodType: PeriodType): string {
-  const formatDate = (value: Date) =>
-    value.toLocaleDateString('nb-NO', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric',
-    })
-
-  if (periodType === 'week') {
-    const from = startOfWeek(date)
-    const to = new Date(from)
-    to.setDate(from.getDate() + 6)
-    return `Uke (${formatDate(from)} - ${formatDate(to)})`
-  }
-
-  const from = new Date(date.getFullYear(), date.getMonth(), 1)
-  const to = new Date(date.getFullYear(), date.getMonth() + 1, 0)
-  return `Måned (${formatDate(from)} - ${formatDate(to)})`
-}
-
-function getInitialInterestAnchor(interestPeriod: InterestPeriod): string {
-  const anchor = new Date()
-  if (interestPeriod === 'week') {
-    anchor.setDate(anchor.getDate() - 7)
-  } else if (interestPeriod === 'month') {
-    anchor.setMonth(anchor.getMonth() - 1)
-  } else {
-    anchor.setFullYear(anchor.getFullYear() - 1)
-  }
-  return anchor.toISOString()
-}
-
-function isEntryInCurrentPeriod(entry: Entry, periodType: PeriodType, periodKey: string): boolean {
-  return getPeriodKey(new Date(entry.timestamp), periodType) === periodKey
-}
-
-function isLegacySeedProfile(profile: ChildProfile): boolean {
-  const looksLikeSeedName = ['mille', 'barn'].includes(profile.childName.trim().toLowerCase())
-  const hasNoConfiguredLogin = !profile.childPinHash && !profile.childPinSalt
-  const hasNoCustomData =
-    profile.mandatoryTasks.length === 0 &&
-    profile.bonusTasks.length === 0 &&
-    profile.penaltyTasks.length === 0 &&
-    profile.rewardLevels.length === 0 &&
-    profile.entries.length === 0 &&
-    profile.settlements.length === 0 &&
-    profile.carryPoints === 0
-
-  return looksLikeSeedName && profile.baseAllowance === 0 && hasNoConfiguredLogin && hasNoCustomData
-}
-
-function isDefaultChildName(value: string): boolean {
-  return value.trim().toLowerCase() === DEFAULT_CHILD_NAME.toLowerCase()
-}
-
-function formatChildNameForDisplay(name: string): string {
-  if (isDefaultChildName(name)) {
-    return `${name} (endres i Innstillinger)`
-  }
-  return name
-}
-
-function getBonusTaskKey(name: string, points: number): string {
-  return `${name.trim().toLowerCase()}::${Math.max(1, Math.floor(points))}`
-}
-
-function normalizeLoadedState(raw: unknown): AppState {
-  if (!raw || typeof raw !== 'object') {
-    return initialState
-  }
-
-  const candidate = raw as Partial<Omit<AppState, 'parentSettings'>> & {
-    parentSettings?: Partial<ParentSettings> & { parentPin?: string }
-    childName?: string
-    periodType?: PeriodType
-    baseAllowance?: number
-    mandatoryTasks?: MandatoryTask[]
-    bonusTasks?: BonusTask[]
-    penaltyTasks?: PenaltyTask[]
-    rewardLevels?: RewardLevel[]
-    historyFilter?: HistoryFilter
-    entries?: Entry[]
-    settlements?: Settlement[]
-    carryPoints?: number
-  }
-
-  if (Array.isArray(candidate.profiles)) {
-    const mappedProfiles = candidate.profiles.map((profile) => ({
-      ...createDefaultProfile(profile.childName || 'Barn'),
-      ...profile,
-      childPinHash: profile.childPinHash ?? candidate.parentSettings?.childPinHash ?? null,
-      childPinSalt: profile.childPinSalt ?? candidate.parentSettings?.childPinSalt ?? null,
-      childPinIterations:
-        profile.childPinIterations ?? candidate.parentSettings?.childPinIterations ?? AUTH_ITERATIONS,
-      childPinPlain: profile.childPinPlain ?? null,
-      mandatoryTasks: profile.mandatoryTasks ?? [],
-      bonusTasks: profile.bonusTasks ?? [],
-      penaltyTasks: profile.penaltyTasks ?? [],
-      rewardLevels: profile.rewardLevels ?? [],
-      historyFilter: profile.historyFilter ?? 'all',
-      entries: profile.entries ?? [],
-      settlements: (profile.settlements ?? []).map((settlement) => ({
-        ...settlement,
-        withdrawnAmount: Math.max(0, settlement.withdrawnAmount ?? 0),
-        paidAt: settlement.paidAt ?? null,
-      })),
-    }))
-
-    const filteredProfiles =
-      mappedProfiles.length === 1 && isLegacySeedProfile(mappedProfiles[0])
-        ? []
-        : mappedProfiles
-
-    const profiles = filteredProfiles.length > 0
-      ? filteredProfiles
-      : [createDefaultProfile(DEFAULT_CHILD_NAME)]
-
-    const activeChildId =
-      profiles.find((p) => p.id === candidate.activeChildId)?.id ?? profiles[0]?.id ?? ''
-
-    return {
-      profiles,
-      activeChildId,
-      parentSettings: {
-        passwordHash: candidate.parentSettings?.passwordHash ?? null,
-        passwordSalt: candidate.parentSettings?.passwordSalt ?? null,
-        passwordIterations: candidate.parentSettings?.passwordIterations ?? AUTH_ITERATIONS,
-        childPinHash: candidate.parentSettings?.childPinHash ?? null,
-        childPinSalt: candidate.parentSettings?.childPinSalt ?? null,
-        childPinIterations: candidate.parentSettings?.childPinIterations ?? AUTH_ITERATIONS,
-        penaltyEnabled: candidate.parentSettings?.penaltyEnabled ?? false,
-        interestRatePct: Math.max(0, candidate.parentSettings?.interestRatePct ?? 0),
-        interestPeriod: candidate.parentSettings?.interestPeriod ?? 'month',
-        parentAccounts: candidate.parentSettings?.parentAccounts ?? [],
-        legacyPin: candidate.parentSettings?.legacyPin ?? candidate.parentSettings?.parentPin,
-      },
-    }
-  }
-
-  if (candidate.childName) {
-    const migrated = createDefaultProfile(candidate.childName)
-    migrated.periodType = candidate.periodType ?? 'week'
-    migrated.baseAllowance = candidate.baseAllowance ?? 120
-    migrated.childPinHash = candidate.parentSettings?.childPinHash ?? null
-    migrated.childPinSalt = candidate.parentSettings?.childPinSalt ?? null
-    migrated.childPinIterations = candidate.parentSettings?.childPinIterations ?? AUTH_ITERATIONS
-    migrated.childPinPlain = null
-    migrated.mandatoryTasks = candidate.mandatoryTasks ?? migrated.mandatoryTasks
-    migrated.bonusTasks = candidate.bonusTasks ?? migrated.bonusTasks
-    migrated.penaltyTasks = candidate.penaltyTasks ?? migrated.penaltyTasks
-    migrated.rewardLevels = candidate.rewardLevels ?? migrated.rewardLevels
-    migrated.historyFilter = candidate.historyFilter ?? 'all'
-    migrated.entries = candidate.entries ?? []
-    migrated.settlements = (candidate.settlements ?? []).map((settlement) => ({
-      ...settlement,
-      withdrawnAmount: Math.max(0, settlement.withdrawnAmount ?? 0),
-      paidAt: settlement.paidAt ?? null,
-    }))
-    migrated.carryPoints = candidate.carryPoints ?? 0
-
-    return {
-      profiles: [migrated],
-      activeChildId: migrated.id,
-      parentSettings: {
-        passwordHash: null,
-        passwordSalt: null,
-        passwordIterations: AUTH_ITERATIONS,
-        childPinHash: null,
-        childPinSalt: null,
-        childPinIterations: AUTH_ITERATIONS,
-        penaltyEnabled: false,
-        interestRatePct: 0,
-        interestPeriod: 'month',
-        parentAccounts: [],
-        legacyPin: '1234',
-      },
-    }
-  }
-
-  return initialState
-}
-
-function loadState(): AppState {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) {
-      return initialState
-    }
-    const parsed = JSON.parse(raw)
-    return normalizeLoadedState(parsed)
-  } catch {
-    return initialState
-  }
-}
+import type {
+  AppState,
+  AppTab,
+  BonusTask,
+  ChildProfile,
+  DeferredInstallPromptEvent,
+  HistoryFilter,
+  MandatoryTask,
+  PaymentStatusFilter,
+  PenaltyTask,
+  PeriodType,
+  RewardLevel,
+  Settlement,
+  UserRole,
+} from './types'
+import {
+  ADMIN_LOGIN_ENABLED,
+  ADMIN_PASSWORD,
+  ADMIN_USERNAME,
+  AUTH_IDLE_TIMEOUT_MS,
+  AUTH_ITERATIONS,
+  AUTH_LOCK_MAX_ATTEMPTS,
+  AUTH_LOCK_MS,
+  AUTH_SESSION_KEY,
+  CHILD_AUTH_ENDPOINT,
+  authenticateChildCodeWithBackend,
+  createChildCodeCandidate,
+  createRandomHex,
+  derivePasswordHash,
+  getParentPasswordStrengthLabel,
+  isValidChildCode,
+  isValidParentPassword,
+} from './lib/auth'
+import {
+  formatDateRangeLabel,
+  getInitialInterestAnchor,
+  getMonthKey,
+  getPeriodKey,
+  getPeriodLabel,
+  getPeriodStartDate,
+  isEntryInCurrentPeriod,
+} from './lib/period'
+import {
+  DEFAULT_CHILD_NAME,
+  EMPTY_CHILD_PROFILE,
+  STORAGE_KEY,
+  createDefaultProfile,
+  formatChildNameForDisplay,
+  getBonusTaskKey,
+  initialState,
+  isDefaultChildName,
+  loadState,
+  normalizeLoadedState,
+  safeNumber,
+} from './lib/state'
+import { computePeriodOutcome } from './lib/settlement'
 
 const ParentDashboard = lazy(() => import('./ParentDashboard'))
 
@@ -565,6 +93,7 @@ function App() {
   const [newMandatoryCount, setNewMandatoryCount] = useState(1)
   const [newBonusName, setNewBonusName] = useState('')
   const [newBonusPoints, setNewBonusPoints] = useState(1)
+  const [newBonusUpForGrabs, setNewBonusUpForGrabs] = useState(false)
   const [newPenaltyName, setNewPenaltyName] = useState('')
   const [newPenaltyPoints, setNewPenaltyPoints] = useState(1)
   const [newLevelName, setNewLevelName] = useState('')
@@ -585,6 +114,44 @@ function App() {
   const activeProfile =
     state.profiles.find((profile) => profile.id === state.activeChildId) ?? state.profiles[0] ?? EMPTY_CHILD_PROFILE
   const hasProfiles = state.profiles.length > 0
+
+  const allChildrenProgress = useMemo(
+    () =>
+      state.profiles.map((profile) => {
+        const periodKey = getPeriodKey(new Date(), profile.periodType)
+        const periodEntries = profile.entries.filter((entry) =>
+          isEntryInCurrentPeriod(entry, profile.periodType, periodKey),
+        )
+        const mandatoryRequired = profile.mandatoryTasks.reduce((sum, task) => sum + task.requiredCount, 0)
+        const mandatoryDone = profile.mandatoryTasks.reduce((sum, task) => {
+          const count = periodEntries.filter(
+            (entry) => entry.taskType === 'mandatory' && entry.taskId === task.id,
+          ).length
+          return sum + Math.min(task.requiredCount, count)
+        }, 0)
+        const outcome = computePeriodOutcome({
+          entries: profile.entries,
+          periodType: profile.periodType,
+          periodKey,
+          mandatoryTasks: profile.mandatoryTasks,
+          bonusTasks: profile.bonusTasks,
+          penaltyTasks: profile.penaltyTasks,
+          rewardLevels: profile.rewardLevels,
+          baseAllowance: profile.baseAllowance,
+          carryIn: profile.carryPoints,
+          penaltyEnabled: state.parentSettings.penaltyEnabled,
+        })
+        return {
+          profile,
+          mandatoryDone,
+          mandatoryRequired,
+          completionPct:
+            mandatoryRequired > 0 ? Math.round((mandatoryDone / mandatoryRequired) * 100) : 0,
+          outcome,
+        }
+      }),
+    [state.profiles, state.parentSettings.penaltyEnabled],
+  )
 
   const currentPeriodKey = getPeriodKey(new Date(), activeProfile.periodType)
   const currentPeriodLabel = getPeriodLabel(currentPeriodKey, activeProfile.periodType)
@@ -748,6 +315,7 @@ function App() {
         key: string
         name: string
         points: number
+        upForGrabs: boolean
         childNames: string[]
       }
     >()
@@ -761,6 +329,7 @@ function App() {
             key,
             name: task.name,
             points: task.points,
+            upForGrabs: task.upForGrabs,
             childNames: [profile.childName],
           })
           return
@@ -810,6 +379,16 @@ function App() {
     const map = new Map<string, number>()
     sharedBonusEntriesThisPeriod.forEach((entry) => {
       map.set(entry.taskKey, (map.get(entry.taskKey) ?? 0) + 1)
+    })
+    return map
+  }, [sharedBonusEntriesThisPeriod])
+
+  const bonusTakenByChildByTaskKey = useMemo(() => {
+    const map = new Map<string, string>()
+    sharedBonusEntriesThisPeriod.forEach((entry) => {
+      if (!map.has(entry.taskKey)) {
+        map.set(entry.taskKey, entry.childName)
+      }
     })
     return map
   }, [sharedBonusEntriesThisPeriod])
@@ -1054,74 +633,42 @@ function App() {
       return
     }
 
-    const levels = [...activeProfile.rewardLevels].sort((a, b) => a.minPoints - b.minPoints)
     let carryIn = activeProfile.settlements[0]?.carryOut ?? activeProfile.carryPoints
 
     const autoSettlements: Settlement[] = pendingPastPeriodKeys.map((periodKey) => {
-      const periodEntries = activeProfile.entries.filter(
-        (entry) => getPeriodKey(new Date(entry.timestamp), activeProfile.periodType) === periodKey,
-      )
-
-      const mandatoryCountMapForPeriod: Record<string, number> = {}
-      periodEntries
-        .filter((entry) => entry.taskType === 'mandatory')
-        .forEach((entry) => {
-          mandatoryCountMapForPeriod[entry.taskId] = (mandatoryCountMapForPeriod[entry.taskId] ?? 0) + 1
-        })
-
-      const mandatoryMetForPeriod = activeProfile.mandatoryTasks.every(
-        (task) => (mandatoryCountMapForPeriod[task.id] ?? 0) >= task.requiredCount,
-      )
-
-      const bonusPointsForPeriod = periodEntries
-        .filter((entry) => entry.taskType === 'bonus')
-        .reduce((sum, entry) => {
-          const task = activeProfile.bonusTasks.find((item) => item.id === entry.taskId)
-          return sum + (task?.points ?? 0)
-        }, 0)
-
-      const penaltyPointsForPeriod = state.parentSettings.penaltyEnabled
-        ? periodEntries
-            .filter((entry) => entry.taskType === 'penalty')
-            .reduce((sum, entry) => {
-              const task = activeProfile.penaltyTasks.find((item) => item.id === entry.taskId)
-              return sum + (task?.points ?? 0)
-            }, 0)
-        : 0
-
-      const netPointsForPeriod = bonusPointsForPeriod - penaltyPointsForPeriod
-      const pointsAvailableForPeriod = Math.max(0, carryIn + netPointsForPeriod)
-      const reachedLevelForPeriod =
-        levels.filter((level) => level.minPoints <= pointsAvailableForPeriod).at(-1) ?? null
-      const bonusCanApplyForPeriod = mandatoryMetForPeriod
-      const projectedExtraForPeriod = bonusCanApplyForPeriod ? (reachedLevelForPeriod?.extraAmount ?? 0) : 0
-      const projectedPointsSpentForPeriod = bonusCanApplyForPeriod
-        ? (reachedLevelForPeriod?.minPoints ?? 0)
-        : 0
-      const carryOutForPeriod = bonusCanApplyForPeriod
-        ? Math.max(0, pointsAvailableForPeriod - projectedPointsSpentForPeriod)
-        : pointsAvailableForPeriod
+      const outcome = computePeriodOutcome({
+        entries: activeProfile.entries,
+        periodType: activeProfile.periodType,
+        periodKey,
+        mandatoryTasks: activeProfile.mandatoryTasks,
+        bonusTasks: activeProfile.bonusTasks,
+        penaltyTasks: activeProfile.penaltyTasks,
+        rewardLevels: activeProfile.rewardLevels,
+        baseAllowance: activeProfile.baseAllowance,
+        carryIn,
+        penaltyEnabled: state.parentSettings.penaltyEnabled,
+      })
 
       const settlement: Settlement = {
         id: crypto.randomUUID(),
         periodKey,
         periodLabel: getPeriodLabel(periodKey, activeProfile.periodType),
         periodType: activeProfile.periodType,
-        mandatoryMet: mandatoryMetForPeriod,
-        basePaid: mandatoryMetForPeriod ? activeProfile.baseAllowance : 0,
-        extraPaid: projectedExtraForPeriod,
-        totalPaid: mandatoryMetForPeriod ? activeProfile.baseAllowance + projectedExtraForPeriod : 0,
-        pointsEarned: netPointsForPeriod,
-        pointsAvailable: pointsAvailableForPeriod,
-        pointsSpent: projectedPointsSpentForPeriod,
-        carryOut: carryOutForPeriod,
-        reachedLevelName: reachedLevelForPeriod?.name ?? 'Ingen nivå',
+        mandatoryMet: outcome.mandatoryMet,
+        basePaid: outcome.basePaid,
+        extraPaid: outcome.extraPaid,
+        totalPaid: outcome.totalPaid,
+        pointsEarned: outcome.netPoints,
+        pointsAvailable: outcome.pointsAvailable,
+        pointsSpent: outcome.pointsSpent,
+        carryOut: outcome.carryOut,
+        reachedLevelName: outcome.reachedLevelName,
         createdAt: getInitialInterestAnchor(state.parentSettings.interestPeriod),
         withdrawnAmount: 0,
         paidAt: null,
       }
 
-      carryIn = carryOutForPeriod
+      carryIn = outcome.carryOut
       return settlement
     })
 
@@ -1163,6 +710,8 @@ function App() {
   }
 
   useEffect(() => {
+    // Drops ids of profiles that were removed elsewhere; not derivable in render since it must persist user selection.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setTaskTargetChildIds((previous) =>
       previous.filter((id) => state.profiles.some((profile) => profile.id === id)),
     )
@@ -1173,12 +722,16 @@ function App() {
       return
     }
     if (taskTargetChildIds.length === 0 && state.profiles.length > 0) {
+      // Seeds default selection on first visit to the tasks tab.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setTaskTargetChildIds(state.profiles.map((profile) => profile.id))
     }
   }, [activeTab, canManage, state.profiles, taskTargetChildIds.length])
 
   useEffect(() => {
     const mediaQuery = window.matchMedia('(display-mode: standalone)')
+    // Reads browser install state on mount; no way to compute this during render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsInstalledApp(mediaQuery.matches)
     const userAgent = window.navigator.userAgent
     const isIosDevice = /iPhone|iPad|iPod/.test(userAgent)
@@ -1218,6 +771,8 @@ function App() {
       }
       const parsed = JSON.parse(raw) as { expiresAt?: number }
       if (parsed.expiresAt && parsed.expiresAt > Date.now()) {
+        // Restores an existing parent session from localStorage on mount.
+        // eslint-disable-next-line react-hooks/set-state-in-effect
         setRole('parent')
         setIsLoggedIn(true)
         setIsParentUnlocked(true)
@@ -1522,7 +1077,9 @@ function App() {
     const enteredPassword = passwordInput.trim()
 
     const isAdminLogin =
-      enteredUsername.toLowerCase() === ADMIN_USERNAME.toLowerCase() && enteredPassword === ADMIN_PASSWORD
+      ADMIN_LOGIN_ENABLED &&
+      enteredUsername.toLowerCase() === ADMIN_USERNAME.toLowerCase() &&
+      enteredPassword === ADMIN_PASSWORD
 
     if (isAdminLogin) {
       setRole('parent')
@@ -1711,7 +1268,7 @@ function App() {
       return
     }
 
-    if (username.toLowerCase() === ADMIN_USERNAME.toLowerCase()) {
+    if (ADMIN_LOGIN_ENABLED && username.toLowerCase() === ADMIN_USERNAME.toLowerCase()) {
       window.alert('Dette brukernavnet er reservert for admin.')
       return
     }
@@ -1956,6 +1513,21 @@ function App() {
       }
       return
     }
+    if (taskType === 'bonus') {
+      const task = activeProfile.bonusTasks.find((item) => item.id === taskId)
+      if (task?.upForGrabs) {
+        const key = getBonusTaskKey(task.name, task.points)
+        if ((sharedBonusCountByTaskKey.get(key) ?? 0) > 0) {
+          window.alert('Denne ekstraoppgaven er allerede tatt av noen denne perioden.')
+          return
+        }
+      } else if (task) {
+        if ((bonusCountMap[task.id] ?? 0) > 0) {
+          window.alert('Du har allerede gjort denne oppgaven denne perioden.')
+          return
+        }
+      }
+    }
     updateActiveProfile((profile) => ({
       ...profile,
       entries: [
@@ -1971,7 +1543,7 @@ function App() {
   }
 
   function removeEntry(entryId: string) {
-    if (!canManage) {
+    if (!canManage && !canRegisterTasksInCurrentView) {
       return
     }
     updateActiveProfile((profile) => ({
@@ -2024,6 +1596,7 @@ function App() {
           id: crypto.randomUUID(),
           name: newBonusName.trim(),
           points: Math.max(1, Math.floor(newBonusPoints)),
+          upForGrabs: newBonusUpForGrabs,
         },
       ],
     }))
@@ -2032,6 +1605,7 @@ function App() {
     }
     setNewBonusName('')
     setNewBonusPoints(1)
+    setNewBonusUpForGrabs(false)
   }
 
   function addPenaltyTask(event: FormEvent) {
@@ -2324,10 +1898,10 @@ function App() {
     <main className="app-shell">
       <header className="hero-panel">
         <div>
-          <p className="eyebrow">EarnIt</p>
+          <p className="eyebrow">ØrnIt</p>
           <div className="hero-title-row">
             <h1>
-              <span className="hero-brand">EarnIt</span>
+              <span className="hero-brand">ØrnIt</span>
               <span className="hero-slogan">Bygg vaner. Tjen smart.</span>
             </h1>
             <div className="hero-title-icons" aria-hidden="true">
@@ -2335,10 +1909,6 @@ function App() {
               <img src="/credit-card.svg" alt="" />
             </div>
           </div>
-          <p className="lede">
-            Barn registrerer hva de har gjort. Foreldre setter regler, ser status og avslutter
-            perioder.
-          </p>
         </div>
         <div className="hero-side">
           {showFrontInstallButton && (
@@ -2431,9 +2001,11 @@ function App() {
               <button type="button" onClick={() => setShowPasswordInput((value) => !value)}>
                 {showPasswordInput ? 'Skjul' : 'Vis'}
               </button>
-              <p className="mini login-help">
-                Admin logger inn med brukernavn <strong>{ADMIN_USERNAME}</strong> og sitt admin-passord.
-              </p>
+              {ADMIN_LOGIN_ENABLED && (
+                <p className="mini login-help">
+                  Admin logger inn med brukernavn <strong>{ADMIN_USERNAME}</strong> og sitt admin-passord.
+                </p>
+              )}
               <label className="mini remember-check">
                 <input
                   type="checkbox"
@@ -2561,6 +2133,32 @@ function App() {
           <p className="mini">
             Barnetest viser barnesiden med live-data, mens du fortsatt er innlogget som forelder.
           </p>
+        </section>
+      )}
+
+      {canManage && !isChildMode && activeTab === 'overview' && allChildrenProgress.length > 1 && (
+        <section className="card all-children-overview">
+          <h2>Progresjon for alle barn</h2>
+          <p className="mini">Full oversikt med diagrammer vises for barnet du har valgt under "Vis barn".</p>
+          <div className="all-children-grid">
+            {allChildrenProgress.map(({ profile, mandatoryDone, mandatoryRequired, completionPct, outcome }) => (
+              <button
+                key={profile.id}
+                type="button"
+                className={`all-children-card ${profile.id === activeProfile.id ? 'is-active' : ''}`}
+                onClick={() => persist({ ...state, activeChildId: profile.id })}
+              >
+                <strong>{formatChildNameForDisplay(profile.childName)}</strong>
+                <span>
+                  Obligatorisk: {mandatoryDone}/{mandatoryRequired} ({completionPct}%)
+                </span>
+                <span>
+                  {outcome.pointsAvailable} poeng · {outcome.reachedLevelName}
+                </span>
+                <span>{outcome.totalPaid} kr denne perioden</span>
+              </button>
+            ))}
+          </div>
         </section>
       )}
 
@@ -3410,6 +3008,31 @@ function App() {
                       Registrert: {mandatoryCountMap[task.id] ?? 0} / {task.requiredCount}
                     </span>
                   </div>
+                  {(canManage || canRegisterTasksInCurrentView) && (
+                    <ul className="registered-dates">
+                      {currentPeriodEntries
+                        .filter((entry) => entry.taskType === 'mandatory' && entry.taskId === task.id)
+                        .map((entry) => (
+                          <li key={entry.id}>
+                            <span>
+                              {new Date(entry.timestamp).toLocaleDateString('nb-NO', {
+                                weekday: 'short',
+                                day: '2-digit',
+                                month: '2-digit',
+                              })}
+                            </span>
+                            <button
+                              type="button"
+                              className="remove-date"
+                              onClick={() => removeEntry(entry.id)}
+                              aria-label={`Fjern registrering av ${task.name}`}
+                            >
+                              ×
+                            </button>
+                          </li>
+                        ))}
+                    </ul>
+                  )}
                   {canManageTaskSetup && (
                     <p className="mini task-applies-to">
                       Gjelder for: {getChildrenForTask('mandatory', task.name, task.requiredCount).join(', ') || 'Ingen'}
@@ -3446,6 +3069,16 @@ function App() {
           {canManageTaskSetup && (
             <div className="task-targets compact-targets">
               <p className="mini">Oppgaven gjelder for:</p>
+              <label className="target-pill">
+                <input
+                  type="checkbox"
+                  checked={taskTargetChildIds.length === state.profiles.length}
+                  onChange={(event) =>
+                    event.target.checked ? selectAllTargetChildren() : clearTargetChildren()
+                  }
+                />
+                Alle barn
+              </label>
               <div className="task-target-list">
                 {state.profiles.map((profile) => (
                   <label key={profile.id} className="target-pill">
@@ -3489,7 +3122,15 @@ function App() {
 
           <ul className="task-list">
             {canManageTaskSetup
-              ? sortedBonusTasks.map((task) => (
+              ? sortedBonusTasks.map((task) => {
+                  const taskKey = getBonusTaskKey(task.name, task.points)
+                  const alreadyTaken = task.upForGrabs
+                    ? (sharedBonusCountByTaskKey.get(taskKey) ?? 0) > 0
+                    : (bonusCountMap[task.id] ?? 0) > 0
+                  const takenByChild = task.upForGrabs
+                    ? bonusTakenByChildByTaskKey.get(taskKey)
+                    : activeProfile.childName
+                  return (
                   <li key={task.id}>
                     <div>
                       <input
@@ -3511,10 +3152,29 @@ function App() {
                             })
                           }
                         />
-                        <span className="mini bonus-registered">Registrert: {bonusCountMap[task.id] ?? 0}</span>
+                        <label className="mini up-for-grabs-toggle">
+                          <input
+                            type="checkbox"
+                            disabled={!canManageTaskSetup}
+                            checked={task.upForGrabs}
+                            onChange={(event) => updateBonusTask(task.id, { upForGrabs: event.target.checked })}
+                          />
+                          Up for grabs
+                        </label>
+                        <span className="mini bonus-registered">
+                          {alreadyTaken
+                            ? task.upForGrabs
+                              ? `Tatt av ${takenByChild ?? 'noen'}`
+                              : 'Gjort denne perioden'
+                            : 'Ikke tatt ennå'}
+                        </span>
                         {canRegisterTasksInCurrentView && (
-                          <button type="button" onClick={() => addEntry('bonus', task.id)}>
-                            Registrer utført
+                          <button
+                            type="button"
+                            onClick={() => addEntry('bonus', task.id)}
+                            disabled={alreadyTaken}
+                          >
+                            {alreadyTaken ? 'Tatt' : 'Registrer utført'}
                           </button>
                         )}
                         <button
@@ -3531,10 +3191,18 @@ function App() {
                       </p>
                     </div>
                   </li>
-                ))
+                  )
+                })
               : sharedBonusTasks.map((task) => {
+                  const alreadyTaken = task.upForGrabs
+                    ? (sharedBonusCountByTaskKey.get(task.key) ?? 0) > 0
+                    : (bonusCountMap[activeProfileBonusTaskByKey.get(task.key)?.id ?? ''] ?? 0) > 0
+                  const takenByChild = task.upForGrabs
+                    ? bonusTakenByChildByTaskKey.get(task.key)
+                    : activeProfile.childName
                   const activeChildTask = activeProfileBonusTaskByKey.get(task.key)
-                  const canRegisterThisTask = canRegisterTasksInCurrentView && Boolean(activeChildTask)
+                  const canRegisterThisTask =
+                    canRegisterTasksInCurrentView && Boolean(activeChildTask) && !alreadyTaken
                   return (
                     <li key={task.key}>
                       <div>
@@ -3543,7 +3211,11 @@ function App() {
                           <span className="mini">Poeng</span>
                           <strong>{task.points}</strong>
                           <span className="mini bonus-registered">
-                            Registrert: {sharedBonusCountByTaskKey.get(task.key) ?? 0}
+                            {alreadyTaken
+                              ? task.upForGrabs
+                                ? `Tatt av ${takenByChild ?? 'noen'}`
+                                : 'Gjort denne perioden'
+                              : 'Ikke tatt ennå'}
                           </span>
                           {canRegisterThisTask && activeChildTask && (
                             <button type="button" onClick={() => addEntry('bonus', activeChildTask.id)}>
@@ -3552,7 +3224,7 @@ function App() {
                           )}
                         </div>
                         <p className="mini task-applies-to">
-                          Synlig for alle. Gjelder for: {task.childNames.join(', ')}
+                          {task.upForGrabs ? 'Up for grabs. ' : ''}Gjelder for: {task.childNames.join(', ')}
                         </p>
                       </div>
                     </li>
@@ -3576,6 +3248,16 @@ function App() {
           {canManageTaskSetup && (
             <div className="task-targets compact-targets">
               <p className="mini">Oppgaven gjelder for:</p>
+              <label className="target-pill">
+                <input
+                  type="checkbox"
+                  checked={taskTargetChildIds.length === state.profiles.length}
+                  onChange={(event) =>
+                    event.target.checked ? selectAllTargetChildren() : clearTargetChildren()
+                  }
+                />
+                Alle barn
+              </label>
               <div className="task-target-list">
                 {state.profiles.map((profile) => (
                   <label key={profile.id} className="target-pill">
@@ -3594,22 +3276,31 @@ function App() {
           )}
 
           {canManageTaskSetup && (
-            <form className="inline-form" onSubmit={addBonusTask}>
+            <form className="inline-form bonus-form" onSubmit={addBonusTask}>
               <input
                 placeholder="Ny ekstraoppgave"
                 value={newBonusName}
                 onChange={(event) => setNewBonusName(event.target.value)}
               />
-              <input
-                type="number"
-                min={1}
-                placeholder="Poeng"
-                aria-label="Poeng for ekstraoppgave"
-                value={newBonusPoints}
-                onChange={(event) =>
-                  setNewBonusPoints(Math.max(1, safeNumber(event.target.value, 1)))
-                }
-              />
+              <label className="mini">
+                Poeng
+                <input
+                  type="number"
+                  min={1}
+                  value={newBonusPoints}
+                  onChange={(event) =>
+                    setNewBonusPoints(Math.max(1, safeNumber(event.target.value, 1)))
+                  }
+                />
+              </label>
+              <label className="mini up-for-grabs-toggle">
+                <input
+                  type="checkbox"
+                  checked={newBonusUpForGrabs}
+                  onChange={(event) => setNewBonusUpForGrabs(event.target.checked)}
+                />
+                Up for grabs
+              </label>
               <button type="submit">Legg til</button>
             </form>
           )}
@@ -3674,6 +3365,16 @@ function App() {
               {canManageTaskSetup && (
                 <div className="task-targets compact-targets">
                   <p className="mini">Oppgaven gjelder for:</p>
+                  <label className="target-pill">
+                    <input
+                      type="checkbox"
+                      checked={taskTargetChildIds.length === state.profiles.length}
+                      onChange={(event) =>
+                        event.target.checked ? selectAllTargetChildren() : clearTargetChildren()
+                      }
+                    />
+                    Alle barn
+                  </label>
                   <div className="task-target-list">
                     {state.profiles.map((profile) => (
                       <label key={profile.id} className="target-pill">
@@ -3781,24 +3482,30 @@ function App() {
           </ul>
 
           {canManageTaskSetup && (
-            <form className="inline-form" onSubmit={addRewardLevel}>
+            <form className="inline-form level-form" onSubmit={addRewardLevel}>
               <input
                 placeholder="Nivånavn"
                 value={newLevelName}
                 onChange={(event) => setNewLevelName(event.target.value)}
               />
-              <input
-                type="number"
-                min={1}
-                value={newLevelPoints}
-                onChange={(event) => setNewLevelPoints(Math.max(1, safeNumber(event.target.value, 1)))}
-              />
-              <input
-                type="number"
-                min={0}
-                value={newLevelAmount}
-                onChange={(event) => setNewLevelAmount(Math.max(0, safeNumber(event.target.value, 0)))}
-              />
+              <label className="mini">
+                Min. poeng
+                <input
+                  type="number"
+                  min={1}
+                  value={newLevelPoints}
+                  onChange={(event) => setNewLevelPoints(Math.max(1, safeNumber(event.target.value, 1)))}
+                />
+              </label>
+              <label className="mini">
+                Ekstra kr
+                <input
+                  type="number"
+                  min={0}
+                  value={newLevelAmount}
+                  onChange={(event) => setNewLevelAmount(Math.max(0, safeNumber(event.target.value, 0)))}
+                />
+              </label>
               <button type="submit">Legg til nivå</button>
             </form>
           )}

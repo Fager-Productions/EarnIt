@@ -541,6 +541,35 @@ h2 {
 	box-shadow: 0 14px 28px rgba(15, 118, 110, 0.12);
 }
 
+.all-children-grid {
+	display: grid;
+	gap: 12px;
+	grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+
+.all-children-card {
+	display: grid;
+	gap: 4px;
+	text-align: left;
+	border-radius: var(--radius-md);
+	border: 1px solid rgba(15, 118, 110, 0.16);
+	background: linear-gradient(180deg, #fff, #f8fbfc);
+	padding: 14px;
+	cursor: pointer;
+	font: inherit;
+	color: inherit;
+}
+
+.all-children-card span {
+	color: var(--muted);
+	font-size: 0.85rem;
+}
+
+.all-children-card.is-active {
+	border-color: rgba(15, 118, 110, 0.6);
+	box-shadow: 0 10px 20px rgba(15, 118, 110, 0.16);
+}
+
 .tab-nav {
 	position: sticky;
 	top: 8px;
@@ -867,6 +896,45 @@ h2 {
 	margin-left: 6px;
 }
 
+.registered-dates {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin: 6px 0 0;
+	padding: 0;
+	list-style: none;
+}
+
+.registered-dates li {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	padding: 2px 4px 2px 8px;
+	border-radius: 999px;
+	background: rgba(15, 118, 110, 0.08);
+	color: var(--muted);
+	font-size: 0.8rem;
+}
+
+.remove-date {
+	display: grid;
+	place-items: center;
+	width: 18px;
+	height: 18px;
+	padding: 0;
+	border-radius: 50%;
+	border: none;
+	background: rgba(214, 69, 69, 0.14);
+	color: #d64545;
+	font-size: 0.9rem;
+	line-height: 1;
+	cursor: pointer;
+}
+
+.remove-date:hover {
+	background: rgba(214, 69, 69, 0.24);
+}
+
 .bonus-meta-line {
 	display: flex;
 	align-items: center;
@@ -934,6 +1002,29 @@ button:hover {
 	gap: 10px;
 	margin-top: 10px;
 	grid-template-columns: 2fr 1fr auto;
+	align-items: end;
+}
+
+.inline-form label.mini {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+
+.level-form {
+	grid-template-columns: 2fr 1fr 1fr auto;
+}
+
+.bonus-form {
+	grid-template-columns: 2fr 1fr 1fr auto;
+}
+
+.up-for-grabs-toggle {
+	display: flex;
+	flex-direction: row !important;
+	align-items: center;
+	gap: 6px !important;
+	white-space: nowrap;
 }
 
 .reset-card {
