@@ -21,6 +21,7 @@ export const EMPTY_CHILD_PROFILE: ChildProfile = {
   entries: [],
   settlements: [],
   carryPoints: 0,
+  bankDeposits: 0,
 }
 
 export function createDefaultProfile(name = DEFAULT_CHILD_NAME): ChildProfile {
@@ -41,6 +42,7 @@ export function createDefaultProfile(name = DEFAULT_CHILD_NAME): ChildProfile {
     entries: [],
     settlements: [],
     carryPoints: 0,
+    bankDeposits: 0,
   }
 }
 
@@ -56,6 +58,7 @@ export const initialState: AppState = {
     childPinSalt: null,
     childPinIterations: AUTH_ITERATIONS,
     penaltyEnabled: false,
+    bonusRequiresMandatory: true,
     interestRatePct: 0,
     interestPeriod: 'month',
     parentAccounts: [],
@@ -141,6 +144,7 @@ export function normalizeLoadedState(raw: unknown): AppState {
         withdrawnAmount: Math.max(0, settlement.withdrawnAmount ?? 0),
         paidAt: settlement.paidAt ?? null,
       })),
+      bankDeposits: Math.max(0, profile.bankDeposits ?? 0),
     }))
 
     const filteredProfiles =
@@ -166,6 +170,7 @@ export function normalizeLoadedState(raw: unknown): AppState {
         childPinSalt: candidate.parentSettings?.childPinSalt ?? null,
         childPinIterations: candidate.parentSettings?.childPinIterations ?? AUTH_ITERATIONS,
         penaltyEnabled: candidate.parentSettings?.penaltyEnabled ?? false,
+        bonusRequiresMandatory: candidate.parentSettings?.bonusRequiresMandatory ?? true,
         interestRatePct: Math.max(0, candidate.parentSettings?.interestRatePct ?? 0),
         interestPeriod: candidate.parentSettings?.interestPeriod ?? 'month',
         parentAccounts: candidate.parentSettings?.parentAccounts ?? [],
@@ -194,6 +199,7 @@ export function normalizeLoadedState(raw: unknown): AppState {
       paidAt: settlement.paidAt ?? null,
     }))
     migrated.carryPoints = candidate.carryPoints ?? 0
+    migrated.bankDeposits = Math.max(0, (candidate as { bankDeposits?: number }).bankDeposits ?? 0)
 
     return {
       profiles: [migrated],
@@ -206,6 +212,7 @@ export function normalizeLoadedState(raw: unknown): AppState {
         childPinSalt: null,
         childPinIterations: AUTH_ITERATIONS,
         penaltyEnabled: false,
+        bonusRequiresMandatory: true,
         interestRatePct: 0,
         interestPeriod: 'month',
         parentAccounts: [],

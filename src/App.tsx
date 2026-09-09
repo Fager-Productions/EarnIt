@@ -41,7 +41,6 @@ import {
   getMonthKey,
   getPeriodKey,
   getPeriodLabel,
-  getPeriodStartDate,
   isEntryInCurrentPeriod,
 } from './lib/period'
 import {
@@ -57,7 +56,7 @@ import {
   normalizeLoadedState,
   safeNumber,
 } from './lib/state'
-import { computePeriodOutcome } from './lib/settlement'
+import { computePeriodOutcome, settlePastPeriods } from './lib/settlement'
 
 const ParentDashboard = lazy(() => import('./ParentDashboard'))
 
@@ -99,6 +98,7 @@ function App() {
   const [newLevelName, setNewLevelName] = useState('')
   const [newLevelPoints, setNewLevelPoints] = useState(5)
   const [newLevelAmount, setNewLevelAmount] = useState(10)
+  const [depositAmountInput, setDepositAmountInput] = useState('')
   const [withdrawalAmountInput, setWithdrawalAmountInput] = useState('')
   const [parentTestRegistrationEnabled, setParentTestRegistrationEnabled] = useState(false)
   const [taskTargetChildIds, setTaskTargetChildIds] = useState<string[]>([])
@@ -140,6 +140,7 @@ function App() {
           baseAllowance: profile.baseAllowance,
           carryIn: profile.carryPoints,
           penaltyEnabled: state.parentSettings.penaltyEnabled,
+          bonusRequiresMandatory: state.parentSettings.bonusRequiresMandatory,
         })
         return {
           profile,
@@ -150,7 +151,7 @@ function App() {
           outcome,
         }
       }),
-    [state.profiles, state.parentSettings.penaltyEnabled],
+    [state.profiles, state.parentSettings.bonusRequiresMandatory, state.parentSettings.penaltyEnabled],
   )
 
   const currentPeriodKey = getPeriodKey(new Date(), activeProfile.periodType)
@@ -428,6 +429,7 @@ function App() {
   const unpaidSettlementsTotal = unpaidSummary.principal
   const unpaidSettlementsTotalWithInterest = unpaidSummary.totalWithInterest
   const unpaidSettlementsInterest = unpaidSummary.interest
+  const bankBalance = unpaidSettlementsTotal + activeProfile.bankDeposits
 
   const paidThisMonthTotal = useMemo(() => {
     const currentMonthKey = getMonthKey(new Date())
@@ -611,89 +613,20 @@ function App() {
       return
     }
 
-    const settledKeys = new Set(
-      activeProfile.settlements
-        .filter((settlement) => settlement.periodType === activeProfile.periodType)
-        .map((settlement) => settlement.periodKey),
-    )
-
-    const pendingPastPeriodKeys = Array.from(
-      new Set(
-        activeProfile.entries
-          .map((entry) => getPeriodKey(new Date(entry.timestamp), activeProfile.periodType))
-          .filter((periodKey) => periodKey !== currentPeriodKey && !settledKeys.has(periodKey)),
+    const nextProfiles = state.profiles.map((profile) =>
+      settlePastPeriods(
+        profile,
+        state.parentSettings.interestPeriod,
+        state.parentSettings.penaltyEnabled,
+        state.parentSettings.bonusRequiresMandatory,
       ),
-    ).sort(
-      (a, b) =>
-        getPeriodStartDate(a, activeProfile.periodType).getTime() -
-        getPeriodStartDate(b, activeProfile.periodType).getTime(),
     )
-
-    if (pendingPastPeriodKeys.length === 0) {
-      return
-    }
-
-    let carryIn = activeProfile.settlements[0]?.carryOut ?? activeProfile.carryPoints
-
-    const autoSettlements: Settlement[] = pendingPastPeriodKeys.map((periodKey) => {
-      const outcome = computePeriodOutcome({
-        entries: activeProfile.entries,
-        periodType: activeProfile.periodType,
-        periodKey,
-        mandatoryTasks: activeProfile.mandatoryTasks,
-        bonusTasks: activeProfile.bonusTasks,
-        penaltyTasks: activeProfile.penaltyTasks,
-        rewardLevels: activeProfile.rewardLevels,
-        baseAllowance: activeProfile.baseAllowance,
-        carryIn,
-        penaltyEnabled: state.parentSettings.penaltyEnabled,
-      })
-
-      const settlement: Settlement = {
-        id: crypto.randomUUID(),
-        periodKey,
-        periodLabel: getPeriodLabel(periodKey, activeProfile.periodType),
-        periodType: activeProfile.periodType,
-        mandatoryMet: outcome.mandatoryMet,
-        basePaid: outcome.basePaid,
-        extraPaid: outcome.extraPaid,
-        totalPaid: outcome.totalPaid,
-        pointsEarned: outcome.netPoints,
-        pointsAvailable: outcome.pointsAvailable,
-        pointsSpent: outcome.pointsSpent,
-        carryOut: outcome.carryOut,
-        reachedLevelName: outcome.reachedLevelName,
-        createdAt: getInitialInterestAnchor(state.parentSettings.interestPeriod),
-        withdrawnAmount: 0,
-        paidAt: null,
-      }
-
-      carryIn = outcome.carryOut
-      return settlement
-    })
-
-    if (autoSettlements.length > 0) {
-      updateActiveProfile((profile) => ({
-        ...profile,
-        carryPoints: carryIn,
-        settlements: [...autoSettlements.reverse(), ...profile.settlements],
-      }))
+    if (nextProfiles.some((profile, index) => profile !== state.profiles[index])) {
+      persist({ ...state, profiles: nextProfiles })
     }
   }, [
-    activeProfile.baseAllowance,
-    activeProfile.bonusTasks,
-    activeProfile.carryPoints,
-    activeProfile.entries,
-    activeProfile.id,
-    activeProfile.mandatoryTasks,
-    activeProfile.penaltyTasks,
-    activeProfile.periodType,
-    activeProfile.rewardLevels,
-    activeProfile.settlements,
-    currentPeriodKey,
     isLoggedIn,
-    state.parentSettings.interestPeriod,
-    state.parentSettings.penaltyEnabled,
+    state,
   ])
 
   function saveParentSession() {
@@ -1843,7 +1776,26 @@ function App() {
     setActiveTab('overview')
   }
 
-  function registerWithdrawalFromRentAccount(event: FormEvent) {
+  function registerDepositToBank(event: FormEvent) {
+    event.preventDefault()
+    if (!canManage) {
+      return
+    }
+
+    const requestedAmount = Math.floor(Math.max(0, safeNumber(depositAmountInput, 0)))
+    if (requestedAmount <= 0) {
+      window.alert('Skriv inn et innskudd større enn 0 kr.')
+      return
+    }
+
+    updateActiveProfile((profile) => ({
+      ...profile,
+      bankDeposits: profile.bankDeposits + requestedAmount,
+    }))
+    setDepositAmountInput('')
+  }
+
+  function registerWithdrawalFromBank(event: FormEvent) {
     event.preventDefault()
     if (!canManage) {
       return
@@ -1855,13 +1807,14 @@ function App() {
       return
     }
 
-    if (requestedAmount > unpaidSettlementsTotal) {
-      window.alert(`Maks uttak akkurat nå er ${unpaidSettlementsTotal} kr.`)
+    if (requestedAmount > bankBalance) {
+      window.alert(`Maks uttak akkurat nå er ${bankBalance} kr.`)
       return
     }
 
     updateActiveProfile((profile) => {
-      let remaining = requestedAmount
+      const depositWithdrawal = Math.min(profile.bankDeposits, requestedAmount)
+      let remaining = requestedAmount - depositWithdrawal
       const updatedSettlements = [...profile.settlements]
 
       for (let i = updatedSettlements.length - 1; i >= 0 && remaining > 0; i -= 1) {
@@ -1887,6 +1840,7 @@ function App() {
 
       return {
         ...profile,
+        bankDeposits: profile.bankDeposits - depositWithdrawal,
         settlements: updatedSettlements,
       }
     })
@@ -2067,13 +2021,13 @@ function App() {
             </button>
           </>
         )}
-        {isChildMode && (
+        {(isChildMode || (canManage && !isChildMode)) && (
           <button
             type="button"
             className={activeTab === 'account' ? 'primary' : ''}
             onClick={() => setActiveTab('account')}
           >
-            Konto
+            Banken
           </button>
         )}
         {(canManage || isParentLockedToPasswordReset) && !isChildMode && (
@@ -2087,10 +2041,10 @@ function App() {
         )}
       </nav>
 
-      {canManage && activeTab !== 'tasks' && hasProfiles && (
-        <section className="card parent-child-switch">
+      {canManage && hasProfiles && (
+        <section className="parent-toolbar" aria-label="Foreldrekontroller">
           <label>
-            Vis barn
+            Aktivt barn
             <select
               value={activeProfile.id}
               onChange={(event) =>
@@ -2108,7 +2062,7 @@ function App() {
             </select>
           </label>
           <p className="mini">
-            Du ser nå progresjon og historikk for: <strong>{formatChildNameForDisplay(activeProfile.childName)}</strong>
+            Viser data for: <strong>{formatChildNameForDisplay(activeProfile.childName)}</strong>
           </p>
           <div className="role-switch preview-switch">
             <button
@@ -2139,7 +2093,7 @@ function App() {
       {canManage && !isChildMode && activeTab === 'overview' && allChildrenProgress.length > 1 && (
         <section className="card all-children-overview">
           <h2>Progresjon for alle barn</h2>
-          <p className="mini">Full oversikt med diagrammer vises for barnet du har valgt under "Vis barn".</p>
+          <p className="mini">Velg et barn i kontrollen over for å se full detaljvisning med diagrammer.</p>
           <div className="all-children-grid">
             {allChildrenProgress.map(({ profile, mandatoryDone, mandatoryRequired, completionPct, outcome }) => (
               <button
@@ -2606,33 +2560,34 @@ function App() {
                 />
                 Aktiver poengtrekk (ekstra innstilling)
               </label>
+              <label className="mini remember-check">
+                <input
+                  type="checkbox"
+                  checked={state.parentSettings.bonusRequiresMandatory}
+                  onChange={(event) =>
+                    persist({
+                      ...state,
+                      parentSettings: {
+                        ...state.parentSettings,
+                        bonusRequiresMandatory: event.target.checked,
+                      },
+                    })
+                  }
+                />
+                Krev obligatoriske oppgaver før bonus utbetales
+              </label>
+              <p className="mini">
+                Når innstillingen er av, kan opparbeidede bonuspoeng fortsatt gi bonus selv om obligatoriske oppgaver mangler.
+              </p>
             </section>
 
             <section className="settings-module module-interest">
               <h3>
                 <span className="module-glyph" aria-hidden="true">%</span>
-                Renter og konto
+                Renter
               </h3>
-              <p className="mini module-subtitle">Styr rentenivå og følg saldoen mellom innskudd og uttak.</p>
+              <p className="mini module-subtitle">Styr rentenivået som brukes på ikke utbetalt opptjening.</p>
               <div className="task-targets">
-                <p className="mini">Renter på ikke utbetalt saldo</p>
-                <form className="inline-form" onSubmit={registerWithdrawalFromRentAccount}>
-                  <input
-                    type="number"
-                    min={0}
-                    step={1}
-                    placeholder="Uttak fra rentekonto (kr)"
-                    value={withdrawalAmountInput}
-                    onChange={(event) => setWithdrawalAmountInput(event.target.value)}
-                  />
-                  <button type="submit">Registrer uttak</button>
-                  <button
-                    type="button"
-                    onClick={() => setWithdrawalAmountInput(String(unpaidSettlementsTotal))}
-                  >
-                    Bruk maks
-                  </button>
-                </form>
                 <div className="settings-grid">
                   <label>
                     Rentesats (%)
@@ -2673,15 +2628,7 @@ function App() {
                     </select>
                   </label>
                 </div>
-                <p className="mini">
-                  Rentekonto hovedsaldo: <strong>{unpaidSettlementsTotal} kr</strong>. Med renter:{' '}
-                  <strong>{unpaidSettlementsTotalWithInterest} kr</strong> ({unpaidSettlementsInterest}{' '}
-                  kr renter). Uttatte perioder får ikke renter.
-                </p>
-                <p className="mini">
-                  Totalt opptjent ukelønn: <strong>{totalEarnedAllowance} kr</strong>. Totalt tatt ut:{' '}
-                  <strong>{totalWithdrawnAllowance} kr</strong>.
-                </p>
+                <p className="mini">Uttatte perioder får ikke renter.</p>
               </div>
             </section>
 
@@ -2812,7 +2759,7 @@ function App() {
           Mest verdifulle ekstraoppgave: <strong>{topBonusTask ? `${topBonusTask.name} (${topBonusTask.points} poeng)` : 'Ingen registrert enda'}</strong>.
         </p>}
         {isChildMode && (
-          <p className="summary-line summary-secondary">Se Konto-fanen for sparepenger, renter og totalsaldo.</p>
+          <p className="summary-line summary-secondary">Se Banken for sparepenger, renter og totalsaldo.</p>
         )}
         {canManage && !isChildMode && (
           <div className="row-actions">
@@ -2822,8 +2769,8 @@ function App() {
         )}
       </section>}
 
-      {activeTab === 'overview' && canManage && !isChildMode && <section className="card rent-account-card">
-        <h2>Rentekonto</h2>
+      {activeTab === 'account' && canManage && !isChildMode && <section className="card rent-account-card">
+        <h2>Banken</h2>
         <p className="mini">
           Renter beregnes kun for perioder som ikke er markert som utbetalt.
         </p>
@@ -2833,6 +2780,10 @@ function App() {
               <tr>
                 <th scope="row">Totalt opptjent ukelønn (innskudd)</th>
                 <td>{totalEarnedAllowance} kr</td>
+              </tr>
+              <tr>
+                <th scope="row">Manuelle innskudd</th>
+                <td>{activeProfile.bankDeposits} kr</td>
               </tr>
               <tr>
                 <th scope="row">Aktiv rentesats</th>
@@ -2861,11 +2812,74 @@ function App() {
                 <td>+{unpaidSettlementsInterest} kr</td>
               </tr>
               <tr className="rent-account-total-row">
-                <th scope="row">Rentekonto saldo med renter</th>
-                <td>{unpaidSettlementsTotalWithInterest} kr</td>
+                <th scope="row">Banksaldo med renter</th>
+                <td>{unpaidSettlementsTotalWithInterest + activeProfile.bankDeposits} kr</td>
               </tr>
             </tbody>
           </table>
+        </div>
+      </section>}
+
+      {activeTab === 'account' && canManage && !isChildMode && <section className="card">
+        <h2>Bankoversikt</h2>
+        <label className="bank-child-selector">
+          <span className="mini">Vis bank for</span>
+          <select
+            value={activeProfile.id}
+            onChange={(event) => persist({ ...state, activeChildId: event.target.value })}
+          >
+            {state.profiles.map((profile) => (
+              <option key={profile.id} value={profile.id}>
+                {formatChildNameForDisplay(profile.childName)}
+              </option>
+            ))}
+          </select>
+        </label>
+        <p className="mini">Samlet oversikt for {formatChildNameForDisplay(activeProfile.childName)}.</p>
+        <div className="task-targets">
+          <p className="mini">Sett inn eller ta ut penger fra barnets bank.</p>
+          <form className="inline-form" onSubmit={registerDepositToBank}>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              placeholder="Sett inn (kr)"
+              value={depositAmountInput}
+              onChange={(event) => setDepositAmountInput(event.target.value)}
+            />
+            <button type="submit">Sett inn</button>
+          </form>
+          <form className="inline-form" onSubmit={registerWithdrawalFromBank}>
+            <input
+              type="number"
+              min={0}
+              step={1}
+              placeholder="Ta ut (kr)"
+              value={withdrawalAmountInput}
+              onChange={(event) => setWithdrawalAmountInput(event.target.value)}
+            />
+            <button type="submit">Ta ut</button>
+            <button
+              type="button"
+              onClick={() => setWithdrawalAmountInput(String(bankBalance))}
+            >
+              Bruk maks
+            </button>
+          </form>
+        </div>
+        <div className="kpi-grid child-savings-kpis">
+          <article>
+            <p>Totalt opptjent</p>
+            <strong>{totalEarnedAllowance} kr</strong>
+          </article>
+          <article>
+            <p>Totalt tatt ut</p>
+            <strong>{totalWithdrawnAllowance} kr</strong>
+          </article>
+          <article>
+            <p>Hovedsaldo</p>
+            <strong>{bankBalance} kr</strong>
+          </article>
         </div>
       </section>}
 
@@ -2883,7 +2897,7 @@ function App() {
         <div className="kpi-grid child-savings-kpis">
           <article>
             <p>Sparepenger nå</p>
-            <strong>{unpaidSettlementsTotalWithInterest} kr</strong>
+            <strong>{unpaidSettlementsTotalWithInterest + activeProfile.bankDeposits} kr</strong>
           </article>
           <article>
             <p>Ekstra fra renter</p>
@@ -2896,7 +2910,7 @@ function App() {
       </section>}
 
       {activeTab === 'account' && isChildMode && <section className="card">
-        <h2>Kontooversikt</h2>
+        <h2>Banken</h2>
         <p className="mini">Her ser du hva som er tjent opp totalt og hva som eventuelt er tatt ut.</p>
         <div className="kpi-grid child-savings-kpis">
           <article>
@@ -2909,7 +2923,7 @@ function App() {
           </article>
           <article>
             <p>Hovedsaldo</p>
-            <strong>{unpaidSettlementsTotal} kr</strong>
+            <strong>{bankBalance} kr</strong>
           </article>
         </div>
       </section>}

@@ -87,6 +87,7 @@ export type ChildProfile = {
   entries: Entry[]
   settlements: Settlement[]
   carryPoints: number
+  bankDeposits: number
 }
 
 export type ParentSettings = {
@@ -97,6 +98,7 @@ export type ParentSettings = {
   childPinSalt: string | null
   childPinIterations: number
   penaltyEnabled: boolean
+  bonusRequiresMandatory: boolean
   interestRatePct: number
   interestPeriod: InterestPeriod
   parentAccounts: ParentAccount[]

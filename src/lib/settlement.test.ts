@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { computePeriodOutcome } from './settlement'
-import type { BonusTask, Entry, MandatoryTask, PenaltyTask, RewardLevel } from '../types'
+import { computePeriodOutcome, settlePastPeriods } from './settlement'
+import type { BonusTask, ChildProfile, Entry, MandatoryTask, PenaltyTask, RewardLevel } from '../types'
 
 const mandatoryTasks: MandatoryTask[] = [{ id: 'm1', name: 'Rydde rom', requiredCount: 2 }]
 const bonusTasks: BonusTask[] = [{ id: 'b1', name: 'Vaske bil', points: 5, upForGrabs: false }]
@@ -79,6 +79,26 @@ describe('computePeriodOutcome', () => {
     expect(outcome.netPoints).toBe(0)
   })
 
+  it('can pay a reached bonus level without mandatory tasks when enabled', () => {
+    const outcome = computePeriodOutcome({
+      entries: [entry('bonus', 'b1')],
+      periodType: 'week',
+      periodKey: '2026-W02',
+      mandatoryTasks,
+      bonusTasks,
+      penaltyTasks,
+      rewardLevels,
+      baseAllowance: 100,
+      carryIn: 0,
+      penaltyEnabled: false,
+      bonusRequiresMandatory: false,
+    })
+
+    expect(outcome.mandatoryMet).toBe(false)
+    expect(outcome.extraPaid).toBe(10)
+    expect(outcome.pointsSpent).toBe(5)
+  })
+
   it('subtracts penalty points when penalties are enabled', () => {
     const outcome = computePeriodOutcome({
       entries: [entry('mandatory', 'm1'), entry('mandatory', 'm1'), entry('bonus', 'b1'), entry('penalty', 'p1')],
@@ -135,5 +155,34 @@ describe('computePeriodOutcome', () => {
     })
 
     expect(outcome.netPoints).toBe(5)
+  })
+
+  it('settles the previous week and carries unused points into the next one', () => {
+    const profile: ChildProfile = {
+      id: 'child-1',
+      childName: 'Kaja',
+      periodType: 'week',
+      baseAllowance: 100,
+      childPinHash: null,
+      childPinSalt: null,
+      childPinIterations: 120000,
+      childPinPlain: null,
+      mandatoryTasks: [],
+      bonusTasks,
+      penaltyTasks,
+      rewardLevels,
+      historyFilter: 'all',
+      entries: [entry('bonus', 'b1', '2026-09-07T10:00:00.000Z')],
+      settlements: [],
+      carryPoints: 8,
+      bankDeposits: 0,
+    }
+
+    const nextProfile = settlePastPeriods(profile, 'month', false, true, new Date('2026-09-14T00:00:00.000Z'))
+
+    expect(nextProfile.settlements).toHaveLength(1)
+    expect(nextProfile.settlements[0].pointsAvailable).toBe(13)
+    expect(nextProfile.carryPoints).toBe(3)
+    expect(nextProfile.entries).toHaveLength(1)
   })
 })

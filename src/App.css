@@ -532,13 +532,28 @@ h2 {
 	background: #5f6caf;
 }
 
-.parent-child-switch {
+.parent-toolbar {
 	display: grid;
-	gap: 10px;
-	padding: 16px;
-	border: 2px solid rgba(15, 118, 110, 0.3);
-	background: linear-gradient(165deg, rgba(224, 248, 243, 0.92), rgba(255, 255, 255, 0.96));
-	box-shadow: 0 14px 28px rgba(15, 118, 110, 0.12);
+	grid-template-columns: minmax(180px, 280px) 1fr auto;
+	align-items: center;
+	gap: 12px;
+	padding: 10px 12px;
+	border: 1px solid rgba(15, 118, 110, 0.24);
+	border-radius: var(--radius-md);
+	background: rgba(255, 255, 255, 0.82);
+	box-shadow: 0 8px 18px rgba(15, 118, 110, 0.08);
+}
+
+.parent-toolbar > label {
+	display: grid;
+	gap: 4px;
+	font-size: 0.8rem;
+	font-weight: 800;
+	color: var(--muted);
+}
+
+.parent-toolbar .preview-switch {
+	margin: 0;
 }
 
 .all-children-grid {
@@ -762,6 +777,17 @@ h2 {
 	display: grid;
 	gap: 12px;
 	grid-template-columns: repeat(4, minmax(140px, 1fr));
+}
+
+.bank-child-selector {
+	display: grid;
+	gap: 6px;
+	max-width: 420px;
+	margin-bottom: 10px;
+}
+
+.bank-child-selector select {
+	width: 100%;
 }
 
 .period-chip {
@@ -1049,7 +1075,8 @@ button:hover {
 	.kpi-grid,
 	.grid-two,
 	.inline-form,
-	.password-form {
+	.password-form,
+	.parent-toolbar {
 		grid-template-columns: 1fr;
 	}
 
