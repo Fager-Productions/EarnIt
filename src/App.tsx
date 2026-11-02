@@ -2077,10 +2077,10 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
       <fieldset disabled={cloudBusy} className="app-content">
       <header className="hero-panel">
         <div>
-          <p className="eyebrow">EarnIt</p>
+          <p className="eyebrow">ØrnIt</p>
           <div className="hero-title-row">
             <h1>
-              <span className="hero-brand">EarnIt</span>
+              <span className="hero-brand">ØrnIt</span>
               <span className="hero-slogan">Bygg vaner. Spar smart</span>
             </h1>
             <div className="hero-title-icons" aria-hidden="true">
