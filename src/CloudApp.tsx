@@ -183,29 +183,50 @@ function AuthenticatedApp() {
         snapshot ? <App cloud={cloud} /> : <p>Laster familiens data … <button onClick={() => {
           void logout().catch(() => {})
         }}>Logg ut</button></p> :
-        <main style={{ maxWidth: 440, margin: '3rem auto', padding: 20 }}>
-          <h1>Ukelønn – skyinnlogging</h1>
-          <p>Hver familie har separate data. Barn bruker sin egen kode.</p>
+        <main className="app-shell cloud-login">
+          <header className="hero-panel">
+            <div>
+              <p className="eyebrow">EarnIt</p>
+              <div className="hero-title-row">
+                <h1>
+                  <span className="hero-brand">EarnIt</span>
+                  <span className="hero-slogan">Bygg vaner. Spar smart</span>
+                </h1>
+                <div className="hero-title-icons" aria-hidden="true">
+                  <img src="/money-bills.svg" alt="" />
+                  <img src="/credit-card.svg" alt="" />
+                </div>
+              </div>
+            </div>
+          </header>
           <InstallHelp />
-          {!session && <nav>
-            <button onClick={() => setMode('parent')}>Forelder</button>
-            <button onClick={() => setMode('child')}>Barn</button>
-            <button onClick={() => setMode('recovery')}>Glemt passord</button>
+          <section className="card auth-card">
+          <h2>{session ? (mustChange ? 'Velg ditt eget passord før første bruk' : 'Bytt passord') :
+            mode === 'recovery' ? 'Glemt passord' : 'Logg inn'}</h2>
+          <p className="mini login-help">Hver familie har separate data. Barn bruker sin egen kode.</p>
+          {!session && <nav className="role-switch" aria-label="Velg innlogging">
+            <button className={mode === 'parent' ? 'primary' : ''} aria-pressed={mode === 'parent'}
+              onClick={() => setMode('parent')}>Forelder</button>
+            <button className={mode === 'child' ? 'primary' : ''} aria-pressed={mode === 'child'}
+              onClick={() => setMode('child')}>Barn</button>
+            <button className={mode === 'recovery' ? 'primary' : ''} aria-pressed={mode === 'recovery'}
+              onClick={() => setMode('recovery')}>Glemt passord</button>
           </nav>}
-          <form onSubmit={submit}>
-            {session ? <h2>{mustChange ? 'Velg ditt eget passord før første bruk' : 'Bytt passord'}</h2> :
+          <form className="cloud-login-form" onSubmit={submit}>
+            {!session && (
               mode === 'child' ? <label>Barnets kode<input autoComplete="off" required value={code}
                 onChange={event => setCode(event.target.value)} /></label> :
                 <label>E-post<input type="email" autoComplete="username" required value={email}
-                  onChange={event => setEmail(event.target.value)} /></label>}
+                  onChange={event => setEmail(event.target.value)} /></label>)}
             {(session || mode === 'parent') && <label>{session ? 'Nytt passord (minst 12 tegn)' : 'Passord'}
               <input type="password" required minLength={session ? 12 : undefined}
                 autoComplete={session ? 'new-password' : 'current-password'}
                 value={password} onChange={event => setPassword(event.target.value)} /></label>}
-            <button disabled={busy} type="submit">{busy ? 'Venter …' :
+            <button className="primary" disabled={busy} type="submit">{busy ? 'Venter …' :
               session ? 'Lagre nytt passord' : mode === 'recovery' ? 'Send gjenopprettingslenke' : 'Logg inn'}</button>
           </form>
           {session && <button disabled={busy} onClick={() => { void logout().catch(() => {}) }}>Logg ut</button>}
+          </section>
         </main>}
   </div>
 }

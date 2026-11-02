@@ -560,6 +560,16 @@ h2 {
 	margin-top: 8px;
 }
 
+.cloud-login .hero-panel {
+	grid-template-columns: 1fr;
+}
+
+.cloud-login-form {
+	display: grid;
+	gap: 16px;
+	width: min(100%, 440px);
+}
+
 .settings-card {
 	display: grid;
 	gap: 18px;
