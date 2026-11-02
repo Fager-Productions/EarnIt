@@ -16,7 +16,9 @@ export function getIsoWeekKey(date: Date): string {
   isoThursday.setDate(weekStart.getDate() + 3)
   const isoYear = isoThursday.getFullYear()
   const yearStart = startOfWeek(new Date(isoYear, 0, 4))
-  const days = Math.floor((weekStart.getTime() - yearStart.getTime()) / 86400000)
+  const weekStartUtc = Date.UTC(weekStart.getFullYear(), weekStart.getMonth(), weekStart.getDate())
+  const yearStartUtc = Date.UTC(yearStart.getFullYear(), yearStart.getMonth(), yearStart.getDate())
+  const days = (weekStartUtc - yearStartUtc) / 86400000
   const week = Math.floor(days / 7) + 1
   return `${isoYear}-W${String(week).padStart(2, '0')}`
 }
@@ -86,5 +88,6 @@ export function getInitialInterestAnchor(interestPeriod: InterestPeriod): string
 }
 
 export function isEntryInCurrentPeriod(entry: Entry, periodType: PeriodType, periodKey: string): boolean {
-  return getPeriodKey(new Date(entry.timestamp), periodType) === periodKey
+  return (!entry.periodType || entry.periodType === periodType) &&
+    getPeriodKey(new Date(entry.timestamp), periodType) === periodKey
 }

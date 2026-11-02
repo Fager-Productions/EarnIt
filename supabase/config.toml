@@ -1,0 +1,7 @@
+project_id = "ukelonn-pilot"
+
+[functions.child-login]
+import_map = "./functions/deno.json"
+# Login is public; all administrative branches explicitly verify the supplied Supabase session.
+# Supabase publishable keys are not JWTs, so the gateway JWT check must be disabled.
+verify_jwt = false

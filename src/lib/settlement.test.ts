@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import { computePeriodOutcome, settlePastPeriods } from './settlement'
 import type { BonusTask, ChildProfile, Entry, MandatoryTask, PenaltyTask, RewardLevel } from '../types'
+import { createDefaultProfile } from './state'
+import { bankSummary } from './bank'
 
 const mandatoryTasks: MandatoryTask[] = [{ id: 'm1', name: 'Rydde rom', requiredCount: 2 }]
 const bonusTasks: BonusTask[] = [{ id: 'b1', name: 'Vaske bil', points: 5, upForGrabs: false }]
@@ -15,6 +17,46 @@ function entry(taskType: Entry['taskType'], taskId: string, timestamp = '2026-01
 }
 
 describe('computePeriodOutcome', () => {
+  it('adds independent fixed, mandatory and bonus pay using the same outcome', () => {
+    const common = {
+      periodType: 'week' as const, periodKey: '2026-W02', mandatoryTasks, bonusTasks, penaltyTasks, rewardLevels,
+      baseAllowance: 100, fixedAllowance: 50, carryIn: 0, penaltyEnabled: false, bonusRequiresMandatory: false,
+    }
+    const incomplete = computePeriodOutcome({ ...common, entries: [entry('bonus', 'b1')] })
+    expect(incomplete).toMatchObject({ fixedPaid: 50, basePaid: 0, extraPaid: 10, totalPaid: 60 })
+    const complete = computePeriodOutcome({ ...common, entries: [entry('bonus', 'b1'), entry('mandatory', 'm1'), entry('mandatory', 'm1')] })
+    expect(complete.totalPaid).toBe(160)
+    expect(computePeriodOutcome({ ...common, entries: [entry('bonus', 'b1')], bonusRequiresMandatory: true }).totalPaid).toBe(50)
+  })
+
+  it('pays fixed salary for empty periods exactly once and never settles the future', () => {
+    const profile = { ...createDefaultProfile(), fixedAllowance: 100, allowanceStartAt: '2026-09-07T10:00:00Z' }
+    const now = new Date('2026-09-21T12:00:00Z')
+    const settled = settlePastPeriods(profile, 'month', false, true, now)
+    expect(settled.settlements).toHaveLength(2)
+    expect(bankSummary(settled).balance).toBe(200)
+    expect(settlePastPeriods(settled, 'month', false, true, now)).toBe(settled)
+    const future = { ...profile, allowanceStartAt: '2026-10-01T10:00:00Z', entries: [entry('bonus', 'b1', '2026-10-05T10:00:00Z')] }
+    expect(settlePastPeriods(future, 'month', false, true, now).settlements).toHaveLength(0)
+  })
+
+  it('respects manually reduced carry points instead of restoring the last settlement carry', () => {
+    const profile = { ...createDefaultProfile(), fixedAllowance: 100, carryPoints: 2, allowanceStartAt: '2026-09-07T10:00:00Z' }
+    const first = settlePastPeriods(profile, 'month', false, true, new Date('2026-09-14T12:00:00Z'))
+    const next = settlePastPeriods({ ...first, carryPoints: 0 }, 'month', false, true, new Date('2026-09-21T12:00:00Z'))
+    expect(next.carryPoints).toBe(0)
+  })
+
+  it('uses entry snapshots and does not reinterpret a weekly entry as monthly earnings', () => {
+    const common = {
+      entries: [{ ...entry('bonus', 'b1'), points: 5, periodType: 'week' as const }],
+      periodType: 'week' as const, periodKey: '2026-W02', mandatoryTasks: [], bonusTasks: [], penaltyTasks: [], rewardLevels,
+      baseAllowance: 100, fixedAllowance: 0, carryIn: 0, penaltyEnabled: false,
+    }
+    expect(computePeriodOutcome(common)).toMatchObject({ netPoints: 5, basePaid: 0 })
+    expect(computePeriodOutcome({ ...common, periodType: 'month', periodKey: '2026-01' }).netPoints).toBe(0)
+  })
+
   it('pays nothing when mandatory tasks are not met', () => {
     const outcome = computePeriodOutcome({
       entries: [entry('mandatory', 'm1')],

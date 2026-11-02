@@ -1,20 +1,17 @@
-import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
-import { calculateUnpaidTotalWithInterest, type InterestPeriod } from './lib/coreLogic'
+import type { InterestPeriod } from './lib/coreLogic'
 import './App.css'
 import type {
   AppState,
   AppTab,
   BonusTask,
   ChildProfile,
-  DeferredInstallPromptEvent,
   HistoryFilter,
-  MandatoryTask,
   PaymentStatusFilter,
   PenaltyTask,
   PeriodType,
   RewardLevel,
-  Settlement,
   UserRole,
 } from './types'
 import {
@@ -37,7 +34,6 @@ import {
 } from './lib/auth'
 import {
   formatDateRangeLabel,
-  getInitialInterestAnchor,
   getMonthKey,
   getPeriodKey,
   getPeriodLabel,
@@ -53,19 +49,28 @@ import {
   initialState,
   isDefaultChildName,
   loadState,
-  normalizeLoadedState,
+  parseBackupState,
   safeNumber,
 } from './lib/state'
-import { computePeriodOutcome, settlePastPeriods } from './lib/settlement'
+import { settlePastPeriods } from './lib/settlement'
+import { computePeriodOutcome } from './lib/settlement'
+import { accrueBankInterest, bankSummary as summarizeBank, depositToBank, resetInterestSchedule, roundMoney, settlementBankSummary, withdrawFromBank } from './lib/bank'
+import type { CloudContext } from './lib/backend'
+import InstallHelp from './InstallHelp'
 
 const ParentDashboard = lazy(() => import('./ParentDashboard'))
 
-function App() {
-  const [state, setState] = useState<AppState>(loadState)
-  const [role, setRole] = useState<UserRole>('child')
+function App({ cloud }: { cloud?: CloudContext } = {}) {
+  const previouslyFocusedValueInput = useRef<HTMLInputElement | null>(null)
+  const [state, setState] = useState<AppState>(() => cloud?.state ?? loadState())
+  const [role, setRole] = useState<UserRole>(cloud?.role ?? 'child')
+  const [now, setNow] = useState(() => new Date())
+  const [cloudBusy, setCloudBusy] = useState(false)
+  const savingRef = useRef(false)
+  const [cloudCodes, setCloudCodes] = useState<Record<string, string>>({})
   const [parentPreviewChildView, setParentPreviewChildView] = useState(false)
-  const [isLoggedIn, setIsLoggedIn] = useState(false)
-  const [isParentUnlocked, setIsParentUnlocked] = useState(false)
+  const [isLoggedIn, setIsLoggedIn] = useState(Boolean(cloud))
+  const [isParentUnlocked, setIsParentUnlocked] = useState(cloud?.role === 'parent')
   const [parentUsernameInput, setParentUsernameInput] = useState('')
   const [passwordInput, setPasswordInput] = useState('')
   const [showPasswordInput, setShowPasswordInput] = useState(false)
@@ -79,6 +84,9 @@ function App() {
   const [authAttempts, setAuthAttempts] = useState(0)
   const [authLockedUntil, setAuthLockedUntil] = useState<number | null>(null)
   const [activeTab, setActiveTab] = useState<AppTab>('overview')
+  const [dashboardChildId, setDashboardChildId] = useState('all')
+  const [bankChildId, setBankChildId] = useState('all')
+  const [penaltyTargetChildIdByTask, setPenaltyTargetChildIdByTask] = useState<Record<string, string>>({})
 
   const [newChildName, setNewChildName] = useState('')
   const [newParentAccountUsername, setNewParentAccountUsername] = useState('')
@@ -89,7 +97,7 @@ function App() {
   const [historyPaymentFilter, setHistoryPaymentFilter] = useState<PaymentStatusFilter>('all')
 
   const [newMandatoryName, setNewMandatoryName] = useState('')
-  const [newMandatoryCount, setNewMandatoryCount] = useState(1)
+  const [newMandatoryCount, setNewMandatoryCount] = useState('1')
   const [newBonusName, setNewBonusName] = useState('')
   const [newBonusPoints, setNewBonusPoints] = useState(1)
   const [newBonusUpForGrabs, setNewBonusUpForGrabs] = useState(false)
@@ -100,65 +108,64 @@ function App() {
   const [newLevelAmount, setNewLevelAmount] = useState(10)
   const [depositAmountInput, setDepositAmountInput] = useState('')
   const [withdrawalAmountInput, setWithdrawalAmountInput] = useState('')
-  const [parentTestRegistrationEnabled, setParentTestRegistrationEnabled] = useState(false)
+  const [bankWithdrawalMode, setBankWithdrawalMode] = useState<'money' | 'points'>('money')
   const [taskTargetChildIds, setTaskTargetChildIds] = useState<string[]>([])
+  const [editingBaseAllowance, setEditingBaseAllowance] = useState(false)
+  const [baseAllowanceEditingChildId, setBaseAllowanceEditingChildId] = useState<string | null>(null)
+  const [baseAllowanceDraft, setBaseAllowanceDraft] = useState(0)
   const [levelUpToast, setLevelUpToast] = useState<string | null>(null)
-  const [installPromptEvent, setInstallPromptEvent] = useState<DeferredInstallPromptEvent | null>(null)
-  const [isInstalledApp, setIsInstalledApp] = useState(false)
-  const [isIosInstallable, setIsIosInstallable] = useState(false)
   const previousLevelByChildRef = useRef<Record<string, string | null>>({})
   const toastTimerRef = useRef<number | null>(null)
   const parentIdleTimerRef = useRef<number | null>(null)
   const importInputRef = useRef<HTMLInputElement | null>(null)
 
+  const persist = useCallback(async (next: AppState): Promise<boolean> => {
+    if (savingRef.current) {
+      window.alert('Vent til den pågående lagringen er ferdig.')
+      return false
+    }
+
+    savingRef.current = true
+    setCloudBusy(true)
+    try {
+      const rateChanged = next.parentSettings.interestRatePct !== state.parentSettings.interestRatePct ||
+        next.parentSettings.interestPeriod !== state.parentSettings.interestPeriod
+      const prepared = {
+        ...next,
+        profiles: next.profiles.map(profile => {
+          const accrued = accrueBankInterest(profile, rateChanged ? state.parentSettings : next.parentSettings)
+          return rateChanged ? resetInterestSchedule(accrued) : accrued
+        }),
+      }
+      if (cloud) {
+        if (cloud.role !== 'parent') {
+          setState(next)
+          return true
+        }
+        setState(await cloud.saveState(prepared))
+      } else {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(prepared))
+        setState(prepared)
+      }
+      return true
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : 'Kunne ikke lagre endringen.')
+      return false
+    } finally {
+      savingRef.current = false
+      setCloudBusy(false)
+    }
+  }, [cloud, state.parentSettings])
+
   const activeProfile =
     state.profiles.find((profile) => profile.id === state.activeChildId) ?? state.profiles[0] ?? EMPTY_CHILD_PROFILE
   const hasProfiles = state.profiles.length > 0
 
-  const allChildrenProgress = useMemo(
-    () =>
-      state.profiles.map((profile) => {
-        const periodKey = getPeriodKey(new Date(), profile.periodType)
-        const periodEntries = profile.entries.filter((entry) =>
-          isEntryInCurrentPeriod(entry, profile.periodType, periodKey),
-        )
-        const mandatoryRequired = profile.mandatoryTasks.reduce((sum, task) => sum + task.requiredCount, 0)
-        const mandatoryDone = profile.mandatoryTasks.reduce((sum, task) => {
-          const count = periodEntries.filter(
-            (entry) => entry.taskType === 'mandatory' && entry.taskId === task.id,
-          ).length
-          return sum + Math.min(task.requiredCount, count)
-        }, 0)
-        const outcome = computePeriodOutcome({
-          entries: profile.entries,
-          periodType: profile.periodType,
-          periodKey,
-          mandatoryTasks: profile.mandatoryTasks,
-          bonusTasks: profile.bonusTasks,
-          penaltyTasks: profile.penaltyTasks,
-          rewardLevels: profile.rewardLevels,
-          baseAllowance: profile.baseAllowance,
-          carryIn: profile.carryPoints,
-          penaltyEnabled: state.parentSettings.penaltyEnabled,
-          bonusRequiresMandatory: state.parentSettings.bonusRequiresMandatory,
-        })
-        return {
-          profile,
-          mandatoryDone,
-          mandatoryRequired,
-          completionPct:
-            mandatoryRequired > 0 ? Math.round((mandatoryDone / mandatoryRequired) * 100) : 0,
-          outcome,
-        }
-      }),
-    [state.profiles, state.parentSettings.bonusRequiresMandatory, state.parentSettings.penaltyEnabled],
-  )
-
-  const currentPeriodKey = getPeriodKey(new Date(), activeProfile.periodType)
+  const currentPeriodKey = getPeriodKey(now, activeProfile.periodType)
   const currentPeriodLabel = getPeriodLabel(currentPeriodKey, activeProfile.periodType)
   const currentPeriodRangeLabel = useMemo(
-    () => formatDateRangeLabel(new Date(), activeProfile.periodType),
-    [activeProfile.periodType],
+    () => formatDateRangeLabel(now, activeProfile.periodType),
+    [activeProfile.periodType, now],
   )
 
   const currentPeriodEntries = useMemo(
@@ -168,6 +175,25 @@ function App() {
       ),
     [activeProfile.entries, activeProfile.periodType, currentPeriodKey],
   )
+
+  useEffect(() => {
+    const refresh = () => setNow(new Date())
+    const timer = window.setInterval(refresh, 60_000)
+    window.addEventListener('focus', refresh)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refresh)
+    }
+  }, [])
+
+  const remoteState = cloud?.state
+  useEffect(() => {
+    if (remoteState) {
+      // Synchronizes confirmed remote state; no optimistic writes to financial data.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setState(remoteState)
+    }
+  }, [remoteState])
 
   const mandatoryCountMap = useMemo(() => {
     const map: Record<string, number> = {}
@@ -193,7 +219,7 @@ function App() {
         .filter((entry) => entry.taskType === 'bonus')
         .reduce((sum, entry) => {
           const task = activeProfile.bonusTasks.find((item) => item.id === entry.taskId)
-          return sum + (task?.points ?? 0)
+          return sum + (entry.points ?? task?.points ?? 0)
         }, 0),
     [currentPeriodEntries, activeProfile.bonusTasks],
   )
@@ -207,7 +233,7 @@ function App() {
         .filter((entry) => entry.taskType === 'penalty')
         .reduce((sum, entry) => {
           const task = activeProfile.penaltyTasks.find((item) => item.id === entry.taskId)
-          return sum + (task?.points ?? 0)
+          return sum + (entry.points ?? task?.points ?? 0)
         }, 0)
     },
     [currentPeriodEntries, activeProfile.penaltyTasks, state.parentSettings.penaltyEnabled],
@@ -225,19 +251,6 @@ function App() {
     return map
   }, [currentPeriodEntries])
 
-  const penaltyCountMap = useMemo(() => {
-    if (!state.parentSettings.penaltyEnabled) {
-      return {}
-    }
-    const map: Record<string, number> = {}
-    currentPeriodEntries
-      .filter((entry) => entry.taskType === 'penalty')
-      .forEach((entry) => {
-        map[entry.taskId] = (map[entry.taskId] ?? 0) + 1
-      })
-    return map
-  }, [currentPeriodEntries, state.parentSettings.penaltyEnabled])
-
   const pointsAvailableNow = Math.max(0, activeProfile.carryPoints + netPointsThisPeriod)
 
   const sortedLevels = useMemo(
@@ -248,13 +261,15 @@ function App() {
   const reachedLevelNow =
     sortedLevels.filter((level) => level.minPoints <= pointsAvailableNow).at(-1) ?? null
 
-  const bonusCanApplyNow = mandatoryMet
-  const projectedExtra = bonusCanApplyNow ? (reachedLevelNow?.extraAmount ?? 0) : 0
-  const projectedPointsSpent = bonusCanApplyNow ? (reachedLevelNow?.minPoints ?? 0) : 0
-  const projectedCarryOut = bonusCanApplyNow
-    ? Math.max(0, pointsAvailableNow - projectedPointsSpent)
-    : pointsAvailableNow
-  const projectedTotalAllowance = mandatoryMet ? activeProfile.baseAllowance + projectedExtra : 0
+  const currentOutcome = computePeriodOutcome({
+    ...activeProfile,
+    periodKey: currentPeriodKey,
+    carryIn: activeProfile.carryPoints,
+    penaltyEnabled: state.parentSettings.penaltyEnabled,
+    bonusRequiresMandatory: state.parentSettings.bonusRequiresMandatory,
+  })
+  const projectedCarryOut = currentOutcome.carryOut
+  const projectedTotalAllowance = currentOutcome.totalPaid
 
   const mandatoryRequiredTotal = activeProfile.mandatoryTasks.reduce(
     (sum, task) => sum + task.requiredCount,
@@ -270,30 +285,6 @@ function App() {
       : 0
 
   const nextLevel = sortedLevels.find((level) => level.minPoints > pointsAvailableNow) ?? null
-  const payoutChartData = [
-    { name: 'Grunnlønn', amount: mandatoryMet ? activeProfile.baseAllowance : 0 },
-    { name: 'Bonus', amount: projectedExtra },
-    { name: 'Total', amount: projectedTotalAllowance },
-  ]
-
-  const levelProgressData = [
-    {
-      name: 'Poeng',
-      na: pointsAvailableNow,
-      mal: nextLevel ? nextLevel.minPoints : pointsAvailableNow,
-    },
-  ]
-
-  const mandatoryProgressData = activeProfile.mandatoryTasks.map((task) => ({
-    name: task.name,
-    gjort: Math.min(task.requiredCount, mandatoryCountMap[task.id] ?? 0),
-    krav: task.requiredCount,
-  }))
-
-  const bonusContributionData = activeProfile.bonusTasks.map((task) => ({
-    name: task.name,
-    poeng: (bonusCountMap[task.id] ?? 0) * task.points,
-  }))
   const sortedBonusTasks = useMemo(
     () =>
       [...activeProfile.bonusTasks].sort((a, b) =>
@@ -352,12 +343,11 @@ function App() {
   }, [state.profiles])
 
   const sharedBonusEntriesThisPeriod = useMemo(() => {
-    const now = new Date()
     const entries = state.profiles.flatMap((profile) => {
       const profileCurrentPeriodKey = getPeriodKey(now, profile.periodType)
       return profile.entries
         .filter((entry) => entry.taskType === 'bonus')
-        .filter((entry) => getPeriodKey(new Date(entry.timestamp), profile.periodType) === profileCurrentPeriodKey)
+        .filter((entry) => isEntryInCurrentPeriod(entry, profile.periodType, profileCurrentPeriodKey))
         .map((entry) => {
           const task = profile.bonusTasks.find((item) => item.id === entry.taskId)
           return {
@@ -371,10 +361,16 @@ function App() {
         })
     })
 
-    return entries.sort(
+    const remoteClaims = cloud?.role === 'child' ? (state.sharedBonusClaims ?? [])
+      .filter(claim => !entries.some(entry => entry.timestamp === claim.timestamp && entry.taskName === claim.taskName && entry.childName === claim.childName))
+      .map(claim => ({
+        ...claim, id: `claim:${claim.taskName}:${claim.timestamp}:${claim.childName}`,
+        taskKey: getBonusTaskKey(claim.taskName, claim.points),
+      })) : []
+    return [...entries, ...remoteClaims].sort(
       (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime(),
     )
-  }, [state.profiles])
+  }, [state.profiles, state.sharedBonusClaims, cloud?.role, now])
 
   const sharedBonusCountByTaskKey = useMemo(() => {
     const map = new Map<string, number>()
@@ -398,46 +394,213 @@ function App() {
     Boolean(CHILD_AUTH_ENDPOINT) ||
     state.profiles.some((profile) => Boolean(profile.childPinHash && profile.childPinSalt))
 
-  const penaltyContributionData = activeProfile.penaltyTasks.map((task) => ({
-    name: task.name,
-    trekk: (penaltyCountMap[task.id] ?? 0) * task.points,
-  }))
+  const dashboardProfileData = useMemo(() => state.profiles.map((profile) => {
+    const periodKey = getPeriodKey(now, profile.periodType)
+    const periodEntries = profile.entries.filter((entry) =>
+      isEntryInCurrentPeriod(entry, profile.periodType, periodKey),
+    )
+    const mandatoryCountMap = new Map<string, number>()
+    const bonusCountMap = new Map<string, number>()
+    const penaltyCountMap = new Map<string, number>()
+    periodEntries.forEach((entry) => {
+      const target = entry.taskType === 'mandatory'
+        ? mandatoryCountMap
+        : entry.taskType === 'bonus'
+          ? bonusCountMap
+          : penaltyCountMap
+      target.set(entry.taskId, (target.get(entry.taskId) ?? 0) + 1)
+    })
 
-  const settlementHistoryData = activeProfile.settlements
-    .slice(0, 6)
-    .reverse()
-    .map((settlement) => ({
-      periode: settlement.periodLabel,
-      utbetaling: settlement.totalPaid,
-      poeng: settlement.pointsEarned,
-      periodType: settlement.periodType,
-    }))
+    const mandatoryRequiredTotal = profile.mandatoryTasks.reduce((sum, task) => sum + task.requiredCount, 0)
+    const mandatoryDoneTotal = profile.mandatoryTasks.reduce(
+      (sum, task) => sum + Math.min(task.requiredCount, mandatoryCountMap.get(task.id) ?? 0),
+      0,
+    )
+    const mandatoryMet = mandatoryDoneTotal >= mandatoryRequiredTotal
+    const bonusPoints = periodEntries.filter(entry => entry.taskType === 'bonus').reduce(
+      (sum, entry) => sum + (entry.points ?? profile.bonusTasks.find(task => task.id === entry.taskId)?.points ?? 0), 0)
+    const penaltyPoints = state.parentSettings.penaltyEnabled
+      ? periodEntries.filter(entry => entry.taskType === 'penalty').reduce(
+        (sum, entry) => sum + (entry.points ?? profile.penaltyTasks.find(task => task.id === entry.taskId)?.points ?? 0), 0)
+      : 0
+    const pointsAvailable = Math.max(0, profile.carryPoints + bonusPoints - penaltyPoints)
+    const sortedLevels = [...profile.rewardLevels].sort((a, b) => a.minPoints - b.minPoints)
+    const reachedLevel = sortedLevels.filter((level) => level.minPoints <= pointsAvailable).at(-1) ?? null
+    const nextLevel = sortedLevels.find((level) => level.minPoints > pointsAvailable) ?? null
+    const outcome = computePeriodOutcome({
+      ...profile, periodKey, carryIn: profile.carryPoints,
+      penaltyEnabled: state.parentSettings.penaltyEnabled,
+      bonusRequiresMandatory: state.parentSettings.bonusRequiresMandatory,
+    })
+    const projectedExtra = outcome.extraPaid
+    const projectedTotalAllowance = outcome.totalPaid
 
-  const unpaidSummary = useMemo(
-    () =>
-      calculateUnpaidTotalWithInterest(
-        activeProfile.settlements,
-        state.parentSettings.interestRatePct,
-        state.parentSettings.interestPeriod,
-      ),
-    [
-      activeProfile.settlements,
-      state.parentSettings.interestPeriod,
-      state.parentSettings.interestRatePct,
-    ],
+    return {
+      profile,
+      mandatoryRequiredTotal,
+      mandatoryDoneTotal,
+      mandatoryCompletionPct: mandatoryRequiredTotal > 0
+        ? Math.round((mandatoryDoneTotal / mandatoryRequiredTotal) * 100)
+        : 0,
+      mandatoryMet,
+      pointsAvailable,
+      netPoints: bonusPoints - penaltyPoints,
+      reachedLevelName: reachedLevel?.name ?? 'Ingen nivå',
+      nextLevelPoints: nextLevel?.minPoints ?? pointsAvailable,
+      projectedExtra,
+      projectedTotalAllowance,
+      projectedCarryOut: outcome.carryOut,
+      bonusPoints,
+      penaltyPoints,
+      payout: {
+        name: profile.childName,
+        fastlønn: outcome.fixedPaid,
+        grunnlønn: outcome.basePaid,
+        bonus: projectedExtra,
+        total: projectedTotalAllowance,
+      },
+      mandatory: profile.mandatoryTasks.map((task) => ({
+        name: task.name,
+        gjort: Math.min(task.requiredCount, mandatoryCountMap.get(task.id) ?? 0),
+        krav: task.requiredCount,
+      })),
+      bonus: profile.bonusTasks.map((task) => ({
+        name: task.name,
+        poeng: (bonusCountMap.get(task.id) ?? 0) * task.points,
+      })),
+      penalty: profile.penaltyTasks.map((task) => ({
+        name: task.name,
+        trekk: (penaltyCountMap.get(task.id) ?? 0) * task.points,
+      })),
+      settlements: profile.settlements.slice(0, 6).reverse().map((settlement) => ({
+        periode: `${profile.childName}: ${settlement.periodLabel}`,
+        utbetaling: settlement.totalPaid,
+        poeng: settlement.pointsEarned,
+        periodType: settlement.periodType,
+      })),
+    }
+  }), [state.parentSettings.penaltyEnabled, state.parentSettings.bonusRequiresMandatory, state.profiles, now])
+
+  const effectiveDashboardChildId = dashboardChildId !== 'all' && state.profiles.some((profile) => profile.id === dashboardChildId)
+    ? dashboardChildId
+    : 'all'
+  const dashboardSelection = effectiveDashboardChildId === 'all'
+    ? dashboardProfileData
+    : dashboardProfileData.filter((item) => item.profile.id === effectiveDashboardChildId)
+  const dashboardIsAll = effectiveDashboardChildId === 'all'
+  const dashboardSelected = dashboardSelection[0]
+  const dashboardMandatoryRequiredTotal = dashboardSelection.reduce((sum, item) => sum + item.mandatoryRequiredTotal, 0)
+  const dashboardMandatoryDoneTotal = dashboardSelection.reduce((sum, item) => sum + item.mandatoryDoneTotal, 0)
+  const dashboardMandatoryCompletionPct = dashboardMandatoryRequiredTotal > 0
+    ? Math.round((dashboardMandatoryDoneTotal / dashboardMandatoryRequiredTotal) * 100)
+    : 0
+  const dashboardPointsAvailable = dashboardSelection.reduce((sum, item) => sum + item.pointsAvailable, 0)
+  const dashboardNetPoints = dashboardSelection.reduce((sum, item) => sum + item.netPoints, 0)
+  const dashboardProjectedExtra = dashboardSelection.reduce((sum, item) => sum + item.projectedExtra, 0)
+  const dashboardProjectedTotalAllowance = dashboardSelection.reduce((sum, item) => sum + item.projectedTotalAllowance, 0)
+  const dashboardProjectedCarryOut = dashboardSelection.reduce((sum, item) => sum + item.projectedCarryOut, 0)
+  const dashboardBonusPoints = dashboardSelection.reduce((sum, item) => sum + item.bonusPoints, 0)
+  const dashboardPenaltyPoints = dashboardSelection.reduce((sum, item) => sum + item.penaltyPoints, 0)
+  const dashboardMandatoryMet = dashboardSelection.every((item) => item.mandatoryMet)
+  const dashboardUnpaidSummary = dashboardSelection.reduce(
+    (summary, item) => {
+      const unpaid = summarizeBank(item.profile)
+      return {
+        principal: roundMoney(summary.principal + unpaid.principal),
+        totalWithInterest: roundMoney(summary.totalWithInterest + unpaid.balance),
+        interest: roundMoney(summary.interest + unpaid.interest),
+      }
+    },
+    { principal: 0, totalWithInterest: 0, interest: 0 },
   )
-  const unpaidSettlementsTotal = unpaidSummary.principal
-  const unpaidSettlementsTotalWithInterest = unpaidSummary.totalWithInterest
+  const dashboardTotalEarnedAllowance = dashboardSelection.reduce(
+    (sum, item) => sum + item.profile.settlements.reduce((total, settlement) => total + settlement.totalPaid, 0),
+    0,
+  )
+  const dashboardTotalWithdrawnAllowance = dashboardSelection.reduce(
+    (sum, item) => sum + summarizeBank(item.profile).withdrawn,
+    0,
+  )
+  const dashboardPayoutChartData = dashboardIsAll
+    ? dashboardSelection.map((item) => item.payout)
+    : [
+      { name: 'Fast lønn', amount: dashboardSelected?.payout.fastlønn ?? 0 },
+      { name: 'Obligatorisk lønn', amount: dashboardSelected?.payout.grunnlønn ?? 0 },
+      { name: 'Bonus', amount: dashboardSelected?.payout.bonus ?? 0 },
+      { name: 'Total', amount: dashboardSelected?.payout.total ?? 0 },
+    ]
+  const dashboardLevelProgressData = dashboardSelection.map((item) => ({
+    name: dashboardIsAll ? item.profile.childName : 'Poeng',
+    na: item.pointsAvailable,
+    mal: item.nextLevelPoints,
+  }))
+  const combineChartValues = (key: 'mandatory' | 'bonus' | 'penalty') => {
+    const values = new Map<string, { name: string; gjort?: number; krav?: number; poeng?: number; trekk?: number }>()
+    dashboardSelection.forEach((item) => {
+      item[key].forEach((value) => {
+        const existing = values.get(value.name) ?? { name: value.name }
+        if (key === 'mandatory') {
+          const mandatoryValue = value as { gjort: number; krav: number }
+          existing.gjort = (existing.gjort ?? 0) + mandatoryValue.gjort
+          existing.krav = (existing.krav ?? 0) + mandatoryValue.krav
+        } else if (key === 'bonus') {
+          const bonusValue = value as { poeng: number }
+          existing.poeng = (existing.poeng ?? 0) + bonusValue.poeng
+        } else {
+          const penaltyValue = value as { trekk: number }
+          existing.trekk = (existing.trekk ?? 0) + penaltyValue.trekk
+        }
+        values.set(value.name, existing)
+      })
+    })
+    return Array.from(values.values())
+  }
+  const dashboardMandatoryProgressData = combineChartValues('mandatory') as Array<{ name: string; gjort: number; krav: number }>
+  const dashboardBonusContributionData = combineChartValues('bonus') as Array<{ name: string; poeng: number }>
+  const dashboardPenaltyContributionData = combineChartValues('penalty') as Array<{ name: string; trekk: number }>
+  const dashboardSettlementHistoryData = dashboardSelection.flatMap((item) => item.settlements)
+
+  const unpaidSummary = summarizeBank(activeProfile)
+  const unpaidSettlementsTotalWithInterest = unpaidSummary.balance
   const unpaidSettlementsInterest = unpaidSummary.interest
-  const bankBalance = unpaidSettlementsTotal + activeProfile.bankDeposits
+  const childSavingsBeforeInterest = unpaidSummary.principal
+
+  const effectiveBankChildId =
+    bankChildId !== 'all' && state.profiles.some((profile) => profile.id === bankChildId)
+      ? bankChildId
+      : 'all'
+  const bankProfiles = effectiveBankChildId === 'all'
+    ? state.profiles
+    : state.profiles.filter((profile) => profile.id === effectiveBankChildId)
+  const bankSelectedProfile = effectiveBankChildId === 'all' ? null : bankProfiles[0] ?? null
+  const bankSummary = useMemo(
+    () =>
+      bankProfiles.reduce(
+        (summary, profile) => {
+          const unpaid = summarizeBank(profile)
+          return {
+            earned: roundMoney(summary.earned + profile.settlements.reduce((total, settlement) => total + settlement.totalPaid, 0)),
+            deposits: roundMoney(summary.deposits + unpaid.deposits),
+            withdrawn: roundMoney(summary.withdrawn + unpaid.withdrawn),
+            interest: roundMoney(summary.interest + unpaid.interest),
+            balance: roundMoney(summary.balance + unpaid.balance),
+          }
+        },
+        { earned: 0, deposits: 0, withdrawn: 0, interest: 0, balance: 0 },
+      ),
+    [bankProfiles],
+  )
+  const bankSelectedBalance = bankSelectedProfile
+    ? summarizeBank(bankSelectedProfile).balance
+    : 0
 
   const paidThisMonthTotal = useMemo(() => {
     const currentMonthKey = getMonthKey(new Date())
-    return activeProfile.settlements
-      .filter((settlement) => settlement.paidAt)
-      .filter((settlement) => getMonthKey(new Date(settlement.paidAt as string)) === currentMonthKey)
-      .reduce((sum, settlement) => sum + settlement.totalPaid, 0)
-  }, [activeProfile.settlements])
+    return roundMoney(-(activeProfile.transactions ?? [])
+      .filter(transaction => transaction.type === 'withdrawal')
+      .filter(transaction => getMonthKey(new Date(transaction.timestamp)) === currentMonthKey)
+      .reduce((sum, transaction) => sum + transaction.amount, 0))
+  }, [activeProfile.transactions])
 
   const totalEarnedAllowance = useMemo(
     () => activeProfile.settlements.reduce((sum, settlement) => sum + settlement.totalPaid, 0),
@@ -445,10 +608,9 @@ function App() {
   )
 
   const totalWithdrawnAllowance = useMemo(
-    () => activeProfile.settlements.reduce((sum, settlement) => sum + (settlement.withdrawnAmount ?? 0), 0),
-    [activeProfile.settlements],
+    () => summarizeBank(activeProfile).withdrawn,
+    [activeProfile],
   )
-  const totalWithdrawnDisplay = totalWithdrawnAllowance === 0 ? '0 kr' : `-${totalWithdrawnAllowance} kr`
 
   function getChildrenForTask(
     taskType: 'mandatory' | 'bonus' | 'penalty',
@@ -522,36 +684,11 @@ function App() {
   }, [activeProfile.settlements, historyPaymentFilter])
 
   const settlementInterestById = useMemo(() => {
-    const now = new Date()
     return new Map(
-      activeProfile.settlements.map((settlement) => {
-        const outstanding = Math.max(0, settlement.totalPaid - (settlement.withdrawnAmount ?? 0))
-        if (outstanding === 0) {
-          return [
-            settlement.id,
-            {
-              principal: 0,
-              interest: 0,
-              totalWithInterest: 0,
-            },
-          ]
-        }
-
-        const summary = calculateUnpaidTotalWithInterest(
-          [settlement],
-          state.parentSettings.interestRatePct,
-          state.parentSettings.interestPeriod,
-          now,
-        )
-
-        return [settlement.id, summary]
-      }),
+      activeProfile.settlements.map((settlement) =>
+        [settlement.id, settlementBankSummary(activeProfile, settlement.id)]),
     )
-  }, [
-    activeProfile.settlements,
-    state.parentSettings.interestPeriod,
-    state.parentSettings.interestRatePct,
-  ])
+  }, [activeProfile])
 
   const hasConfiguredLevels = sortedLevels.length > 0
   const nextLevelProgressPct = !hasConfiguredLevels
@@ -560,7 +697,8 @@ function App() {
       ? Math.min(100, Math.round((pointsAvailableNow / nextLevel.minPoints) * 100))
       : 100
   const maxExtraAmount = sortedLevels.at(-1)?.extraAmount ?? 0
-  const maxPossiblePayout = (mandatoryMet ? activeProfile.baseAllowance : 0) + maxExtraAmount
+  const maxPossiblePayout = (activeProfile.fixedAllowance ?? 0) +
+    (activeProfile.mandatoryTasks.length > 0 ? activeProfile.baseAllowance : 0) + maxExtraAmount
   const payoutProgressPct =
     maxPossiblePayout > 0 ? Math.round((projectedTotalAllowance / maxPossiblePayout) * 100) : 0
 
@@ -571,23 +709,10 @@ function App() {
   const childBadges = [
     {
       label: 'Oppgavehelt',
-      unlocked: mandatoryTaskCompletedCount === activeProfile.mandatoryTasks.length,
+      unlocked: activeProfile.mandatoryTasks.length > 0 &&
+        mandatoryTaskCompletedCount === activeProfile.mandatoryTasks.length,
       kind: 'mandatory',
     },
-    {
-      label: 'Bonusjeger',
-      unlocked: bonusPointsThisPeriod > 0,
-      kind: 'bonus',
-    },
-    ...(state.parentSettings.penaltyEnabled
-      ? [
-          {
-            label: 'Trekkfri uke',
-            unlocked: penaltyPointsThisPeriod === 0,
-            kind: 'penalty',
-          },
-        ]
-      : []),
     {
       label: 'Nivåmester',
       unlocked: reachedLevelNow !== null,
@@ -604,29 +729,41 @@ function App() {
   const isChildMode = isLoggedIn && (!isParentMode || parentPreviewChildView)
   const mustRenameDefaultChildBeforeTaskSetup = hasProfiles && isDefaultChildName(activeProfile.childName)
   const canRegisterTasks = isLoggedIn && role === 'child'
-  const canRegisterTasksInCurrentView =
-    canRegisterTasks || (canManage && (parentTestRegistrationEnabled || parentPreviewChildView))
   const canManageTaskSetup = canManage && !isChildMode && !mustRenameDefaultChildBeforeTaskSetup
 
   useEffect(() => {
-    if (!isLoggedIn) {
+    if (!isLoggedIn || (cloud && cloud.role !== 'parent') || savingRef.current) {
       return
     }
 
-    const nextProfiles = state.profiles.map((profile) =>
-      settlePastPeriods(
+    let hasChanges = false
+    const nextProfiles = state.profiles.map((profile) => {
+      const settledProfile = accrueBankInterest(settlePastPeriods(
         profile,
         state.parentSettings.interestPeriod,
         state.parentSettings.penaltyEnabled,
         state.parentSettings.bonusRequiresMandatory,
-      ),
-    )
-    if (nextProfiles.some((profile, index) => profile !== state.profiles[index])) {
-      persist({ ...state, profiles: nextProfiles })
+        now,
+      ), state.parentSettings, now)
+
+      if (settledProfile !== profile) {
+        hasChanges = true
+      }
+
+      return settledProfile
+    })
+
+    if (hasChanges) {
+      // Lazy settlement synchronizes the persisted ledger after a clock or remote-state change.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      void persist({ ...state, profiles: nextProfiles })
     }
   }, [
     isLoggedIn,
     state,
+    cloud,
+    now,
+    persist,
   ])
 
   function saveParentSession() {
@@ -662,41 +799,7 @@ function App() {
   }, [activeTab, canManage, state.profiles, taskTargetChildIds.length])
 
   useEffect(() => {
-    const mediaQuery = window.matchMedia('(display-mode: standalone)')
-    // Reads browser install state on mount; no way to compute this during render.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setIsInstalledApp(mediaQuery.matches)
-    const userAgent = window.navigator.userAgent
-    const isIosDevice = /iPhone|iPad|iPod/.test(userAgent)
-    const isSafari = /Safari/.test(userAgent) && !/CriOS|FxiOS/.test(userAgent)
-    setIsIosInstallable(isIosDevice && isSafari && !mediaQuery.matches)
-
-    const onBeforeInstallPrompt = (event: Event) => {
-      event.preventDefault()
-      setInstallPromptEvent(event as DeferredInstallPromptEvent)
-    }
-
-    const onInstalled = () => {
-      setIsInstalledApp(true)
-      setInstallPromptEvent(null)
-    }
-
-    const onDisplayModeChange = () => {
-      setIsInstalledApp(mediaQuery.matches)
-    }
-
-    window.addEventListener('beforeinstallprompt', onBeforeInstallPrompt)
-    window.addEventListener('appinstalled', onInstalled)
-    mediaQuery.addEventListener('change', onDisplayModeChange)
-
-    return () => {
-      window.removeEventListener('beforeinstallprompt', onBeforeInstallPrompt)
-      window.removeEventListener('appinstalled', onInstalled)
-      mediaQuery.removeEventListener('change', onDisplayModeChange)
-    }
-  }, [])
-
-  useEffect(() => {
+    if (cloud) return
     try {
       const raw = localStorage.getItem(AUTH_SESSION_KEY)
       if (!raw) {
@@ -716,7 +819,7 @@ function App() {
     } catch {
       clearParentSession()
     }
-  }, [])
+  }, [cloud])
 
   useEffect(() => {
     const previousLevel = previousLevelByChildRef.current[activeProfile.id] ?? null
@@ -736,7 +839,7 @@ function App() {
   }, [activeProfile.childName, activeProfile.id, reachedLevelNow?.name])
 
   useEffect(() => {
-    if (!isParentMode) {
+    if (!isParentMode || cloud) {
       if (parentIdleTimerRef.current) {
         window.clearTimeout(parentIdleTimerRef.current)
       }
@@ -770,7 +873,7 @@ function App() {
         window.clearTimeout(parentIdleTimerRef.current)
       }
     }
-  }, [isParentMode])
+  }, [isParentMode, cloud])
 
   useEffect(() => {
     return () => {
@@ -782,11 +885,6 @@ function App() {
       }
     }
   }, [])
-
-  function persist(next: AppState) {
-    setState(next)
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
-  }
 
   function updateActiveProfile(updater: (profile: ChildProfile) => ChildProfile) {
     const nextProfiles = state.profiles.map((profile) =>
@@ -838,10 +936,6 @@ function App() {
     setTaskTargetChildIds([])
   }
 
-  function selectOnlyActiveChild() {
-    setTaskTargetChildIds([activeProfile.id])
-  }
-
   function updateHistoryFilterForActiveChild(historyFilter: HistoryFilter) {
     updateActiveProfile((profile) => ({
       ...profile,
@@ -853,7 +947,6 @@ function App() {
     setRole(nextRole)
     if (nextRole !== 'parent') {
       setParentPreviewChildView(false)
-      setParentTestRegistrationEnabled(false)
       setMustChangeParentPasswordAccountId(null)
     }
     setIsParentAdminSession(false)
@@ -893,7 +986,6 @@ function App() {
 
         setRole('child')
         setParentPreviewChildView(false)
-        setParentTestRegistrationEnabled(false)
         setIsParentUnlocked(false)
         setIsLoggedIn(true)
         setActiveTab('overview')
@@ -944,7 +1036,6 @@ function App() {
 
     setRole('child')
     setParentPreviewChildView(false)
-    setParentTestRegistrationEnabled(false)
     setIsParentUnlocked(false)
     setIsLoggedIn(true)
     setActiveTab('overview')
@@ -955,10 +1046,13 @@ function App() {
   }
 
   function logoutApp() {
+    if (cloud) {
+      void cloud.logout().catch(error => window.alert(error instanceof Error ? error.message : 'Kunne ikke logge ut.'))
+      return
+    }
     setIsLoggedIn(false)
     setRole('child')
     setParentPreviewChildView(false)
-    setParentTestRegistrationEnabled(false)
     setIsParentUnlocked(false)
     setIsParentAdminSession(false)
     setMustChangeParentPasswordAccountId(null)
@@ -972,26 +1066,6 @@ function App() {
     setActiveTab('overview')
     clearParentSession()
   }
-
-  async function installApp() {
-    if (isIosInstallable && !installPromptEvent) {
-      window.alert('For iPhone/iPad: trykk Del-knappen i Safari og velg "Legg til på Hjem-skjerm".')
-      return
-    }
-
-    if (!installPromptEvent) {
-      window.alert('Installasjon er ikke tilgjengelig ennå. Prøv igjen om noen sekunder.')
-      return
-    }
-
-    await installPromptEvent.prompt()
-    const choice = await installPromptEvent.userChoice
-    if (choice.outcome === 'accepted') {
-      setInstallPromptEvent(null)
-    }
-  }
-
-  const showFrontInstallButton = !isInstalledApp
 
   async function unlockParentMode(event: FormEvent) {
     event.preventDefault()
@@ -1017,7 +1091,6 @@ function App() {
     if (isAdminLogin) {
       setRole('parent')
       setParentPreviewChildView(false)
-      setParentTestRegistrationEnabled(false)
       setIsParentUnlocked(true)
       setIsParentAdminSession(true)
       setIsLoggedIn(true)
@@ -1048,7 +1121,6 @@ function App() {
       if (hash === matchedAccount.passwordHash) {
         setRole('parent')
         setParentPreviewChildView(false)
-        setParentTestRegistrationEnabled(false)
         setIsParentUnlocked(true)
         setIsParentAdminSession(false)
         setIsLoggedIn(true)
@@ -1083,6 +1155,57 @@ function App() {
       return
     }
     window.alert('Feil brukernavn eller passord')
+  }
+
+  async function createInitialParentAccount(event: FormEvent) {
+    event.preventDefault()
+    if (ADMIN_LOGIN_ENABLED || state.parentSettings.parentAccounts.length > 0) {
+      return
+    }
+
+    const username = parentUsernameInput.trim()
+    const password = passwordInput.trim()
+    if (username.length < 3) {
+      window.alert('Brukernavn må være minst 3 tegn.')
+      return
+    }
+    if (!isValidParentPassword(password)) {
+      window.alert('Passord må være minst 8 tegn og inneholde minst ett tall og ett spesialtegn.')
+      return
+    }
+
+    const salt = createRandomHex(16)
+    const hash = await derivePasswordHash(password, salt, AUTH_ITERATIONS)
+    const account = {
+      id: crypto.randomUUID(),
+      username,
+      passwordHash: hash,
+      passwordSalt: salt,
+      passwordIterations: AUTH_ITERATIONS,
+      mustChangePassword: false,
+      createdAt: new Date().toISOString(),
+    }
+    persist({
+      ...state,
+      parentSettings: {
+        ...state.parentSettings,
+        parentAccounts: [...state.parentSettings.parentAccounts, account],
+      },
+    })
+
+    setRole('parent')
+    setIsParentUnlocked(true)
+    setIsParentAdminSession(false)
+    setIsLoggedIn(true)
+    setActiveTab('overview')
+    setParentUsernameInput('')
+    setPasswordInput('')
+    setShowPasswordInput(false)
+    if (rememberParentSession) {
+      saveParentSession()
+    } else {
+      clearParentSession()
+    }
   }
 
   async function completeFirstParentPasswordChange(event: FormEvent) {
@@ -1130,6 +1253,14 @@ function App() {
       window.alert('Skriv inn navn på barnet.')
       return
     }
+    if (cloud) {
+      const newProfile = createDefaultProfile(newChildName.trim())
+      if (await persist({ ...state, profiles: [...state.profiles, newProfile], activeChildId: newProfile.id })) {
+        setNewChildName('')
+        window.alert('Barnet er opprettet. Trykk «Generer kode» for å opprette barnets innlogging.')
+      }
+      return
+    }
 
     const generatedCode = await generateUniqueChildCode()
     if (!generatedCode) {
@@ -1159,7 +1290,7 @@ function App() {
     window.alert(`Barnet ${newProfile.childName} ble opprettet med automatisk kode. Trykk "Vis kode" i modulen "Barnets profil og kode".`)
   }
 
-  function removeChildProfile(profileId: string) {
+  async function removeChildProfile(profileId: string) {
     if (state.profiles.length <= 1) {
       window.alert('Du må ha minst ett barn i appen.')
       return
@@ -1168,8 +1299,23 @@ function App() {
     if (!profile) {
       return
     }
-    if (!window.confirm(`Slette profil for ${profile.childName}?`)) {
+    const confirmation = window.prompt(
+      `Slette ${profile.childName}? Barnets profil, oppgaver, registreringer, historikk og bankdata blir fjernet. Dette kan ikke angres.\n\nSkriv slette for å bekrefte.`,
+    )
+    if (confirmation === null) {
       return
+    }
+    if (confirmation.trim().toLowerCase() !== 'slette') {
+      window.alert('Barnet ble ikke slettet. Du må skrive slette for å bekrefte.')
+      return
+    }
+    if (cloud) {
+      try {
+        await cloud.removeChildLogin(profileId)
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : 'Kunne ikke fjerne barnets innlogging.')
+        return
+      }
     }
     const remaining = state.profiles.filter((p) => p.id !== profileId)
     const nextActiveId = remaining.some((profile) => profile.id === state.activeChildId)
@@ -1277,6 +1423,16 @@ function App() {
     if (!profile) {
       return
     }
+    if (cloud) {
+      try {
+        const code = await cloud.createChildLogin(profileId)
+        setCloudCodes(previous => ({ ...previous, [profileId]: code }))
+        setVisibleChildCodeById(previous => ({ ...previous, [profileId]: true }))
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : 'Kunne ikke opprette barnekode.')
+      }
+      return
+    }
     if (profile.childPinHash && profile.childPinSalt) {
       window.alert('Barnekode finnes allerede. Fjern kode først hvis du vil lage en ny.')
       return
@@ -1305,6 +1461,12 @@ function App() {
   }
 
   async function replaceChildPinForProfile(profileId: string) {
+    if (cloud) {
+      if (window.confirm('Opprette ny barnekode? Den gamle koden slutter å virke.')) {
+        await generateCodeForProfile(profileId)
+      }
+      return
+    }
     const profile = state.profiles.find((item) => item.id === profileId)
     if (!profile) {
       return
@@ -1353,11 +1515,24 @@ function App() {
     return null
   }
 
-  function removeChildPinForProfile(profileId: string) {
+  async function removeChildPinForProfile(profileId: string) {
     if (!canManage) {
       return
     }
-    if (!window.confirm('Fjerne barnekoden? Barn kan da logge inn uten kode.')) {
+    if (!window.confirm('Fjerne barnekoden? Barnet kan ikke logge inn før en ny kode er opprettet.')) {
+      return
+    }
+    if (cloud) {
+      try {
+        await cloud.removeChildLogin(profileId)
+        setCloudCodes(previous => {
+          const next = { ...previous }
+          delete next[profileId]
+          return next
+        })
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : 'Kunne ikke fjerne barnekoden.')
+      }
       return
     }
 
@@ -1417,6 +1592,14 @@ function App() {
     )
   }
 
+  function exportTransactionsCsv() {
+    const rows = state.profiles.flatMap(profile => (profile.transactions ?? []).map(transaction =>
+      [profile.childName, transaction.timestamp, transaction.type, transaction.amount, transaction.pointsDelta ?? '', transaction.description]
+        .map(value => `"${String(value).replaceAll('"', '""')}"`).join(',')))
+    downloadTextFile(`ukelonn-transaksjoner-${new Date().toISOString().slice(0, 10)}.csv`,
+      `Barn,Dato,Type,Belop,Poeng,Beskrivelse\n${rows.join('\n')}`, 'text/csv;charset=utf-8')
+  }
+
   async function importBackupFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     if (!file) {
@@ -1425,10 +1608,9 @@ function App() {
 
     try {
       const text = await file.text()
-      const parsed = JSON.parse(text)
-      const next = normalizeLoadedState(parsed)
-      persist(next)
-      window.alert('Backup importert.')
+      const next = parseBackupState(JSON.parse(text))
+      if (!window.confirm('Gjenopprette denne sikkerhetskopien? Den erstatter familiens nåværende data.')) return
+      if (await persist(next)) window.alert('Backup importert.')
     } catch {
       window.alert('Kunne ikke importere filen. Sjekk at den er gyldig JSON-backup.')
     } finally {
@@ -1436,8 +1618,34 @@ function App() {
     }
   }
 
-  function addEntry(taskType: 'mandatory' | 'bonus' | 'penalty', taskId: string) {
-    if (!canRegisterTasksInCurrentView) {
+  async function addEntry(taskType: 'mandatory' | 'bonus' | 'penalty', taskId: string) {
+    if (!canRegisterTasks) {
+      return
+    }
+    if (cloud?.role === 'child') {
+      if (taskType === 'penalty') return
+      if (savingRef.current) return
+      savingRef.current = true
+      setCloudBusy(true)
+      try {
+        setState(await cloud.registerEntry(taskType, taskId))
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : 'Kunne ikke registrere oppgaven.')
+      } finally {
+        savingRef.current = false
+        setCloudBusy(false)
+      }
+      return
+    }
+    const task = taskType === 'mandatory' ? activeProfile.mandatoryTasks.find(item => item.id === taskId)
+      : taskType === 'bonus' ? activeProfile.bonusTasks.find(item => item.id === taskId)
+        : activeProfile.penaltyTasks.find(item => item.id === taskId)
+    if (!task) {
+      window.alert('Oppgaven finnes ikke lenger.')
+      return
+    }
+    if (taskType === 'mandatory' && 'requiredCount' in task && (mandatoryCountMap[taskId] ?? 0) >= task.requiredCount) {
+      window.alert('Alle nødvendige registreringer for denne oppgaven er allerede fullført.')
       return
     }
     if (taskType === 'penalty' && !state.parentSettings.penaltyEnabled) {
@@ -1470,13 +1678,56 @@ function App() {
           taskType,
           taskId,
           timestamp: new Date().toISOString(),
+          periodType: profile.periodType,
+          taskName: task.name,
+          points: 'points' in task ? task.points : 0,
         },
       ],
     }))
   }
 
-  function removeEntry(entryId: string) {
-    if (!canManage && !canRegisterTasksInCurrentView) {
+  function registerPenalty(taskId: string, childId: string) {
+    if (!canManage || !state.parentSettings.penaltyEnabled) {
+      return
+    }
+    updateProfileById(childId, (profile) => ({
+      ...profile,
+      entries: [
+        ...profile.entries,
+        {
+          id: crypto.randomUUID(),
+          taskType: 'penalty',
+          taskId,
+          timestamp: new Date().toISOString(),
+          periodType: profile.periodType,
+          taskName: profile.penaltyTasks.find(task => task.id === taskId)?.name,
+          points: profile.penaltyTasks.find(task => task.id === taskId)?.points,
+        },
+      ],
+    }))
+  }
+
+  async function removeEntry(entryId: string) {
+    const entry = activeProfile.entries.find(item => item.id === entryId)
+    if (entry?.taskType === 'penalty' && (!canManage || isChildMode)) {
+      window.alert('Bare foreldre i foreldervisning kan angre poengtrekk.')
+      return
+    }
+    if (!canManage && !canRegisterTasks) {
+      return
+    }
+    if (cloud?.role === 'child') {
+      if (savingRef.current) return
+      savingRef.current = true
+      setCloudBusy(true)
+      try {
+        setState(await cloud.removeEntry(entryId))
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : 'Kunne ikke angre registreringen.')
+      } finally {
+        savingRef.current = false
+        setCloudBusy(false)
+      }
       return
     }
     updateActiveProfile((profile) => ({
@@ -1487,6 +1738,11 @@ function App() {
 
   function addMandatoryTask(event: FormEvent) {
     event.preventDefault()
+    const requiredCount = Number(newMandatoryCount)
+    if (!newMandatoryCount.trim() || !Number.isSafeInteger(requiredCount) || requiredCount < 1) {
+      window.alert('Antall ganger må være et heltall på minst 1.')
+      return
+    }
     if (mustRenameDefaultChildBeforeTaskSetup) {
       window.alert(`Endre barnenavnet fra "${DEFAULT_CHILD_NAME}" før du lager oppgaver.`)
       return
@@ -1501,7 +1757,7 @@ function App() {
         {
           id: crypto.randomUUID(),
           name: newMandatoryName.trim(),
-          requiredCount: Math.max(1, Math.floor(newMandatoryCount)),
+          requiredCount,
         },
       ],
     }))
@@ -1509,7 +1765,7 @@ function App() {
       return
     }
     setNewMandatoryName('')
-    setNewMandatoryCount(1)
+    setNewMandatoryCount('1')
   }
 
   function addBonusTask(event: FormEvent) {
@@ -1550,7 +1806,7 @@ function App() {
     if (!canManage || !newPenaltyName.trim()) {
       return
     }
-    const success = updateTargetProfiles((profile) => ({
+    updateActiveProfile((profile) => ({
       ...profile,
       penaltyTasks: [
         ...profile.penaltyTasks,
@@ -1561,9 +1817,6 @@ function App() {
         },
       ],
     }))
-    if (!success) {
-      return
-    }
     setNewPenaltyName('')
     setNewPenaltyPoints(1)
   }
@@ -1592,78 +1845,6 @@ function App() {
     setNewLevelName('')
     setNewLevelPoints(5)
     setNewLevelAmount(10)
-  }
-
-  function registerPeriodForTesting() {
-    if (!canManage) {
-      return
-    }
-
-    if (
-      !window.confirm(
-        `Registrere ${currentPeriodLabel}? Perioden lagres med utbetaling (${projectedTotalAllowance} kr), og ny test-periode starter med ren tavle.`,
-      )
-    ) {
-      return
-    }
-
-    const settlement: Settlement = {
-      id: crypto.randomUUID(),
-      periodKey: currentPeriodKey,
-      periodLabel: currentPeriodLabel,
-      periodType: activeProfile.periodType,
-      mandatoryMet,
-      basePaid: mandatoryMet ? activeProfile.baseAllowance : 0,
-      extraPaid: projectedExtra,
-      totalPaid: projectedTotalAllowance,
-      pointsEarned: netPointsThisPeriod,
-      pointsAvailable: pointsAvailableNow,
-      pointsSpent: projectedPointsSpent,
-      carryOut: projectedCarryOut,
-      reachedLevelName: reachedLevelNow?.name ?? 'Ingen nivå',
-      createdAt: getInitialInterestAnchor(state.parentSettings.interestPeriod),
-      withdrawnAmount: 0,
-      paidAt: null,
-    }
-
-    updateActiveProfile((profile) => ({
-      ...profile,
-      carryPoints: projectedCarryOut,
-      entries: profile.entries.filter(
-        (entry) =>
-          getPeriodKey(new Date(entry.timestamp), profile.periodType) !== currentPeriodKey,
-      ),
-      settlements: [
-        settlement,
-        ...profile.settlements.filter(
-          (item) => !(item.periodKey === currentPeriodKey && item.periodType === profile.periodType),
-        ),
-      ],
-    }))
-  }
-
-  function updateMandatoryTask(taskId: string, updates: Partial<MandatoryTask>) {
-    if (!canManage) {
-      return
-    }
-    updateActiveProfile((profile) => ({
-      ...profile,
-      mandatoryTasks: profile.mandatoryTasks.map((task) =>
-        task.id === taskId ? { ...task, ...updates } : task,
-      ),
-    }))
-  }
-
-  function updateBonusTask(taskId: string, updates: Partial<BonusTask>) {
-    if (!canManage) {
-      return
-    }
-    updateActiveProfile((profile) => ({
-      ...profile,
-      bonusTasks: profile.bonusTasks.map((task) =>
-        task.id === taskId ? { ...task, ...updates } : task,
-      ),
-    }))
   }
 
   function updateLevel(levelId: string, updates: Partial<RewardLevel>) {
@@ -1764,7 +1945,6 @@ function App() {
     setIsLoggedIn(false)
     setRole('child')
     setParentPreviewChildView(false)
-    setParentTestRegistrationEnabled(false)
     setIsParentUnlocked(false)
     setIsParentAdminSession(false)
     setMustChangeParentPasswordAccountId(null)
@@ -1778,85 +1958,130 @@ function App() {
 
   function registerDepositToBank(event: FormEvent) {
     event.preventDefault()
-    if (!canManage) {
+    if (!canManage || !bankSelectedProfile) {
       return
     }
 
-    const requestedAmount = Math.floor(Math.max(0, safeNumber(depositAmountInput, 0)))
+    if (bankWithdrawalMode === 'points') {
+      const points = Number(depositAmountInput)
+      if (!depositAmountInput.trim() || !Number.isSafeInteger(points) || points <= 0 ||
+        !Number.isSafeInteger(bankSelectedProfile.carryPoints + points)) {
+        window.alert('Skriv inn et gyldig heltall større enn 0 poeng.')
+        return
+      }
+      updateProfileById(bankSelectedProfile.id, (profile) => ({
+        ...profile,
+        carryPoints: profile.carryPoints + points,
+        transactions: [...(profile.transactions ?? []), {
+          id: crypto.randomUUID(),
+          type: 'points',
+          amount: 0,
+          timestamp: new Date().toISOString(),
+          description: `Manuelt tillegg: ${points} overførte poeng`,
+          pointsDelta: points,
+        }],
+      }))
+      setDepositAmountInput('')
+      return
+    }
+
+    const requestedAmount = roundMoney(Math.max(0, safeNumber(depositAmountInput, 0)))
     if (requestedAmount <= 0) {
       window.alert('Skriv inn et innskudd større enn 0 kr.')
       return
     }
 
-    updateActiveProfile((profile) => ({
-      ...profile,
-      bankDeposits: profile.bankDeposits + requestedAmount,
-    }))
+    updateProfileById(bankSelectedProfile.id, (profile) =>
+      depositToBank(accrueBankInterest(profile, state.parentSettings), requestedAmount))
     setDepositAmountInput('')
   }
 
   function registerWithdrawalFromBank(event: FormEvent) {
     event.preventDefault()
-    if (!canManage) {
+    if (!canManage || !bankSelectedProfile) {
       return
     }
 
-    const requestedAmount = Math.floor(Math.max(0, safeNumber(withdrawalAmountInput, 0)))
+    const requestedAmount = bankWithdrawalMode === 'points'
+      ? Math.floor(Math.max(0, safeNumber(withdrawalAmountInput, 0)))
+      : roundMoney(Math.max(0, safeNumber(withdrawalAmountInput, 0)))
     if (requestedAmount <= 0) {
-      window.alert('Skriv inn et uttak større enn 0 kr.')
+      const message = bankWithdrawalMode === 'points'
+        ? 'Skriv inn et poengtrekk større enn 0.'
+        : 'Skriv inn et uttak større enn 0 kr.'
+      window.alert(message)
       return
     }
 
-    if (requestedAmount > bankBalance) {
-      window.alert(`Maks uttak akkurat nå er ${bankBalance} kr.`)
-      return
-    }
-
-    updateActiveProfile((profile) => {
-      const depositWithdrawal = Math.min(profile.bankDeposits, requestedAmount)
-      let remaining = requestedAmount - depositWithdrawal
-      const updatedSettlements = [...profile.settlements]
-
-      for (let i = updatedSettlements.length - 1; i >= 0 && remaining > 0; i -= 1) {
-        const settlement = updatedSettlements[i]
-        const alreadyWithdrawn = Math.max(0, settlement.withdrawnAmount ?? 0)
-        const available = Math.max(0, settlement.totalPaid - alreadyWithdrawn)
-        if (available === 0) {
-          continue
-        }
-
-        const take = Math.min(available, remaining)
-        const nextWithdrawn = alreadyWithdrawn + take
-        const fullyWithdrawn = nextWithdrawn >= settlement.totalPaid
-
-        updatedSettlements[i] = {
-          ...settlement,
-          withdrawnAmount: nextWithdrawn,
-          paidAt: fullyWithdrawn ? settlement.paidAt ?? new Date().toISOString() : null,
-        }
-
-        remaining -= take
+    if (bankWithdrawalMode === 'points') {
+      if (requestedAmount > bankSelectedProfile.carryPoints) {
+        window.alert(`Maks poengtrekk akkurat nå er ${bankSelectedProfile.carryPoints} poeng.`)
+        return
       }
 
-      return {
+      updateProfileById(bankSelectedProfile.id, (profile) => ({
         ...profile,
-        bankDeposits: profile.bankDeposits - depositWithdrawal,
-        settlements: updatedSettlements,
-      }
-    })
+        carryPoints: Math.max(0, profile.carryPoints - requestedAmount),
+        transactions: [...(profile.transactions ?? []), {
+          id: crypto.randomUUID(), type: 'points', amount: 0,
+          timestamp: new Date().toISOString(), description: `Manuelt trekk: ${requestedAmount} overførte poeng`,
+          pointsDelta: -requestedAmount,
+        }],
+      }))
+      setWithdrawalAmountInput('')
+      return
+    }
+
+    const accrued = accrueBankInterest(bankSelectedProfile, state.parentSettings)
+    const availableBalance = summarizeBank(accrued).balance
+    if (requestedAmount > availableBalance) {
+      window.alert(`Maks uttak akkurat nå er ${availableBalance} kr.`)
+      return
+    }
+
+    updateProfileById(bankSelectedProfile.id, () => withdrawFromBank(accrued, requestedAmount))
 
     setWithdrawalAmountInput('')
   }
 
   return (
-    <main className="app-shell">
+    <main
+      className={`app-shell ${isLoggedIn && !isChildMode ? 'parent-view' : ''}`}
+      aria-busy={cloudBusy}
+      onFocusCapture={(event) => {
+        const input = event.target
+        if (input instanceof HTMLInputElement && input.type === 'number') {
+          input.select()
+        }
+      }}
+      onPointerDownCapture={(event) => {
+        const input = event.target
+        previouslyFocusedValueInput.current =
+          input instanceof HTMLInputElement && input.type === 'number' &&
+          input.ownerDocument.activeElement === input ? input : null
+      }}
+      onClickCapture={(event) => {
+        const input = event.target
+        if (input instanceof HTMLInputElement && input.type === 'number') {
+          input.select()
+          if (previouslyFocusedValueInput.current === input) {
+            // Number inputs do not support setSelectionRange.
+            input.ownerDocument.getSelection()?.collapseToEnd()
+          }
+        }
+      }}
+      onBlurCapture={() => {
+        previouslyFocusedValueInput.current = null
+      }}
+    >
+      <fieldset disabled={cloudBusy} className="app-content">
       <header className="hero-panel">
         <div>
           <p className="eyebrow">ØrnIt</p>
           <div className="hero-title-row">
             <h1>
               <span className="hero-brand">ØrnIt</span>
-              <span className="hero-slogan">Bygg vaner. Tjen smart.</span>
+              <span className="hero-slogan">Bygg vaner. Spar smart</span>
             </h1>
             <div className="hero-title-icons" aria-hidden="true">
               <img src="/money-bills.svg" alt="" />
@@ -1865,28 +2090,48 @@ function App() {
           </div>
         </div>
         <div className="hero-side">
-          {showFrontInstallButton && (
-            <button type="button" className="install-mini" onClick={installApp}>
-              Last ned app
-            </button>
+          {isLoggedIn && !isChildMode && (
+            <div className="hero-actions">
+              {isLoggedIn && !isChildMode && (
+                <button type="button" className="logout-mini parent-logout" onClick={logoutApp}>
+                  Logg ut
+                </button>
+              )}
+            </div>
           )}
-          {isLoggedIn && (
-            <div className="hero-meta">
-              <p>
-                Aktiv periode: <strong>{currentPeriodRangeLabel}</strong>
-              </p>
+          {isLoggedIn && isChildMode && (
+            <div className="child-header">
               <div className="hero-profile-row">
-                <p>
-                  Aktiv profil: <strong>{hasProfiles ? activeProfile.childName : 'Ingen barn opprettet'}</strong>
+                {canManage && parentPreviewChildView ? (
+                  <select
+                    className="child-name-box hero-child-name child-preview-selector"
+                    aria-label="Velg barn å forhåndsvise"
+                    value={hasProfiles ? activeProfile.id : ''}
+                    disabled={!hasProfiles}
+                    onChange={(event) => persist({ ...state, activeChildId: event.target.value })}
+                  >
+                    {state.profiles.map((profile) => (
+                      <option key={profile.id} value={profile.id}>{profile.childName}</option>
+                    ))}
+                    {!hasProfiles && <option value="">Ingen barn opprettet</option>}
+                  </select>
+                ) : (
+                <p className="child-name-box">
+                  <strong className="hero-child-name">{hasProfiles ? activeProfile.childName : 'Ingen barn opprettet'}</strong>
                 </p>
+                )}
                 <button type="button" className="logout-mini" onClick={logoutApp}>
                   Logg ut
                 </button>
               </div>
+              <p className="hero-period">
+                <strong>{currentPeriodRangeLabel}</strong>
+              </p>
             </div>
           )}
         </div>
       </header>
+      {!isLoggedIn && <InstallHelp />}
 
       {!isLoggedIn && (
         <section className="card auth-card">
@@ -1937,41 +2182,81 @@ function App() {
           )}
 
           {role === 'parent' && (
-            <form className="inline-form password-form" onSubmit={unlockParentMode}>
-              <input
-                autoCapitalize="off"
-                autoCorrect="off"
-                spellCheck={false}
-                placeholder="Brukernavn for forelder"
-                value={parentUsernameInput}
-                onChange={(event) => setParentUsernameInput(event.target.value)}
-              />
-              <input
-                type={showPasswordInput ? 'text' : 'password'}
-                placeholder="Passord"
-                value={passwordInput}
-                onChange={(event) => setPasswordInput(event.target.value)}
-              />
-              <button type="button" onClick={() => setShowPasswordInput((value) => !value)}>
-                {showPasswordInput ? 'Skjul' : 'Vis'}
-              </button>
-              {ADMIN_LOGIN_ENABLED && (
+            !ADMIN_LOGIN_ENABLED && state.parentSettings.parentAccounts.length === 0 ? (
+              <form className="inline-form password-form" onSubmit={createInitialParentAccount}>
                 <p className="mini login-help">
-                  Admin logger inn med brukernavn <strong>{ADMIN_USERNAME}</strong> og sitt admin-passord.
+                  Opprett den første foreldrekontoen for å komme i gang. Konto og appdata lagres bare i denne nettleseren,
+                  ikke på en server eller andre enheter.
                 </p>
-              )}
-              <label className="mini remember-check">
                 <input
-                  type="checkbox"
-                  checked={rememberParentSession}
-                  onChange={(event) => setRememberParentSession(event.target.checked)}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  placeholder="Velg brukernavn (minst 3 tegn)"
+                  value={parentUsernameInput}
+                  onChange={(event) => setParentUsernameInput(event.target.value)}
                 />
-                Husk meg på denne enheten
-              </label>
-              <button className="primary" type="submit">
-                Logg inn som forelder
-              </button>
-            </form>
+                <input
+                  type={showPasswordInput ? 'text' : 'password'}
+                  placeholder="Velg passord"
+                  value={passwordInput}
+                  onChange={(event) => setPasswordInput(event.target.value)}
+                />
+                <button type="button" onClick={() => setShowPasswordInput((value) => !value)}>
+                  {showPasswordInput ? 'Skjul' : 'Vis'}
+                </button>
+                <p className="mini login-help">
+                  Passordstyrke: <strong>{getParentPasswordStrengthLabel(passwordInput)}</strong>. Minst 8 tegn, ett tall og ett spesialtegn.
+                </p>
+                <label className="mini remember-check">
+                  <input
+                    type="checkbox"
+                    checked={rememberParentSession}
+                    onChange={(event) => setRememberParentSession(event.target.checked)}
+                  />
+                  Husk meg på denne enheten
+                </label>
+                <button className="primary" type="submit">
+                  Opprett foreldrekonto
+                </button>
+              </form>
+            ) : (
+              <form className="inline-form password-form" onSubmit={unlockParentMode}>
+                <input
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  placeholder="Brukernavn for forelder"
+                  value={parentUsernameInput}
+                  onChange={(event) => setParentUsernameInput(event.target.value)}
+                />
+                <input
+                  type={showPasswordInput ? 'text' : 'password'}
+                  placeholder="Passord"
+                  value={passwordInput}
+                  onChange={(event) => setPasswordInput(event.target.value)}
+                />
+                <button type="button" onClick={() => setShowPasswordInput((value) => !value)}>
+                  {showPasswordInput ? 'Skjul' : 'Vis'}
+                </button>
+                {ADMIN_LOGIN_ENABLED && (
+                  <p className="mini login-help">
+                    Admin logger inn med brukernavn <strong>{ADMIN_USERNAME}</strong> og sitt admin-passord.
+                  </p>
+                )}
+                <label className="mini remember-check">
+                  <input
+                    type="checkbox"
+                    checked={rememberParentSession}
+                    onChange={(event) => setRememberParentSession(event.target.checked)}
+                  />
+                  Husk meg på denne enheten
+                </label>
+                <button className="primary" type="submit">
+                  Logg inn som forelder
+                </button>
+              </form>
+            )
           )}
         </section>
       )}
@@ -2043,27 +2328,6 @@ function App() {
 
       {canManage && hasProfiles && (
         <section className="parent-toolbar" aria-label="Foreldrekontroller">
-          <label>
-            Aktivt barn
-            <select
-              value={activeProfile.id}
-              onChange={(event) =>
-                persist({
-                  ...state,
-                  activeChildId: event.target.value,
-                })
-              }
-            >
-              {state.profiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {formatChildNameForDisplay(profile.childName)}
-                </option>
-              ))}
-            </select>
-          </label>
-          <p className="mini">
-            Viser data for: <strong>{formatChildNameForDisplay(activeProfile.childName)}</strong>
-          </p>
           <div className="role-switch preview-switch">
             <button
               type="button"
@@ -2077,41 +2341,11 @@ function App() {
               className={parentPreviewChildView ? 'primary' : ''}
               onClick={() => {
                 setParentPreviewChildView(true)
-                setParentTestRegistrationEnabled(true)
                 setActiveTab('overview')
               }}
             >
-              Barnetest-visning
+              Forhåndsvis barnesiden
             </button>
-          </div>
-          <p className="mini">
-            Barnetest viser barnesiden med live-data, mens du fortsatt er innlogget som forelder.
-          </p>
-        </section>
-      )}
-
-      {canManage && !isChildMode && activeTab === 'overview' && allChildrenProgress.length > 1 && (
-        <section className="card all-children-overview">
-          <h2>Progresjon for alle barn</h2>
-          <p className="mini">Velg et barn i kontrollen over for å se full detaljvisning med diagrammer.</p>
-          <div className="all-children-grid">
-            {allChildrenProgress.map(({ profile, mandatoryDone, mandatoryRequired, completionPct, outcome }) => (
-              <button
-                key={profile.id}
-                type="button"
-                className={`all-children-card ${profile.id === activeProfile.id ? 'is-active' : ''}`}
-                onClick={() => persist({ ...state, activeChildId: profile.id })}
-              >
-                <strong>{formatChildNameForDisplay(profile.childName)}</strong>
-                <span>
-                  Obligatorisk: {mandatoryDone}/{mandatoryRequired} ({completionPct}%)
-                </span>
-                <span>
-                  {outcome.pointsAvailable} poeng · {outcome.reachedLevelName}
-                </span>
-                <span>{outcome.totalPaid} kr denne perioden</span>
-              </button>
-            ))}
           </div>
         </section>
       )}
@@ -2120,21 +2354,24 @@ function App() {
         <Suspense fallback={<section className="card">Laster foreldre-dashboard...</section>}>
           <ParentDashboard
             view="overview"
-            mandatoryCompletionPct={mandatoryCompletionPct}
-            mandatoryDoneTotal={mandatoryDoneTotal}
-            mandatoryRequiredTotal={mandatoryRequiredTotal}
-            pointsAvailableNow={pointsAvailableNow}
-            netPointsThisPeriod={netPointsThisPeriod}
-            reachedLevelName={reachedLevelNow?.name ?? 'Ingen nivå'}
-            projectedExtra={projectedExtra}
-            projectedTotalAllowance={projectedTotalAllowance}
-            payoutChartData={payoutChartData}
-            levelProgressData={levelProgressData}
-            mandatoryProgressData={mandatoryProgressData}
-            bonusContributionData={bonusContributionData}
-            penaltyContributionData={penaltyContributionData}
+            mandatoryCompletionPct={dashboardMandatoryCompletionPct}
+            mandatoryDoneTotal={dashboardMandatoryDoneTotal}
+            mandatoryRequiredTotal={dashboardMandatoryRequiredTotal}
+            pointsAvailableNow={dashboardPointsAvailable}
+            netPointsThisPeriod={dashboardNetPoints}
+            reachedLevelName={dashboardIsAll ? 'Flere nivåer' : (dashboardSelected?.reachedLevelName ?? 'Ingen nivå')}
+            projectedExtra={dashboardProjectedExtra}
+            projectedTotalAllowance={dashboardProjectedTotalAllowance}
+            dashboardChildId={effectiveDashboardChildId}
+            profiles={state.profiles.map((profile) => ({ id: profile.id, childName: formatChildNameForDisplay(profile.childName) }))}
+            onDashboardChildChange={setDashboardChildId}
+            payoutChartData={dashboardPayoutChartData}
+            levelProgressData={dashboardLevelProgressData}
+            mandatoryProgressData={dashboardMandatoryProgressData}
+            bonusContributionData={dashboardBonusContributionData}
+            penaltyContributionData={dashboardPenaltyContributionData}
             penaltyEnabled={state.parentSettings.penaltyEnabled}
-            settlementHistoryData={settlementHistoryData}
+            settlementHistoryData={dashboardSettlementHistoryData}
             historyFilter={activeProfile.historyFilter}
             onHistoryFilterChange={updateHistoryFilterForActiveChild}
           />
@@ -2143,6 +2380,14 @@ function App() {
         <section className="card child-focus">
           <h2>Din progresjon denne perioden</h2>
           <p className="mini">Se hvor mye du har gjort, og hvor nær du er neste nivå.</p>
+
+          <button
+            type="button"
+            className="primary child-next-action"
+            onClick={() => setActiveTab('tasks')}
+          >
+            Se oppgavene mine
+          </button>
 
           <div className={`level-celebration ${hasCelebration ? 'is-active' : ''}`}>
             <span className="spark spark-a" />
@@ -2252,93 +2497,18 @@ function App() {
           </section>
         )}
 
-        {canManage && <div className="settings-grid">
-          {!hasProfiles && (
-            <div className="period-chip">Ingen barn er opprettet ennå. Legg til barn under modulen "Barn i appen".</div>
-          )}
-          <label>
-            Aktivt barn
-            <select
-              value={hasProfiles ? activeProfile.id : ''}
-              disabled={!hasProfiles}
-              onChange={(event) =>
-                persist({
-                  ...state,
-                  activeChildId: event.target.value,
-                })
-              }
-            >
-              {state.profiles.map((profile) => (
-                <option key={profile.id} value={profile.id}>
-                  {profile.childName}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label>
-            Grunnukelønn (kr)
-            <input
-              type="number"
-              min={0}
-              disabled={!canManage || !hasProfiles}
-              value={hasProfiles ? activeProfile.baseAllowance : 0}
-              onChange={(event) =>
-                updateActiveProfile((profile) => ({
-                  ...profile,
-                  baseAllowance: Math.max(0, Math.floor(safeNumber(event.target.value))),
-                }))
-              }
-            />
-          </label>
-
-          <label>
-            Periode
-            <p className="mini">Velg om barnet skal ha ukelønn eller månedslønn.</p>
-            <select
-              value={hasProfiles ? activeProfile.periodType : 'week'}
-              disabled={!canManage || !hasProfiles}
-              onChange={(event) =>
-                updateActiveProfile((profile) => ({
-                  ...profile,
-                  periodType: event.target.value as PeriodType,
-                }))
-              }
-            >
-              <option value="week">Uke</option>
-              <option value="month">Måned</option>
-            </select>
-          </label>
-
-          <div className="period-chip">
-            Aktiv periode: <strong>{currentPeriodLabel}</strong>
-          </div>
-
-          {canManage && (
-            <div className="inline-form">
-              <button type="button" onClick={registerPeriodForTesting}>
-                Registrer periode
-              </button>
-              <p className="mini">
-                For testing: lagrer opptjent i perioden og starter en ny periode uten registreringer.
-              </p>
-            </div>
-          )}
-        </div>}
-
         {canManage && (
           <div className="parent-tools">
             <section className="settings-module module-children">
               <h3>
                 <span className="module-glyph" aria-hidden="true">N</span>
-                Registrerte barn og koder
+                Barn og innlogging
               </h3>
-              <p className="mini module-subtitle">Hvert barn har egen profil med navn og innloggingskode.</p>
+              <p className="mini module-subtitle">Hvert barn får sin egen profil og innloggingskode.</p>
 
               {hasProfiles ? (
                 <div className="children-code-grid">
                   {state.profiles.map((profile) => {
-                    const isActive = profile.id === activeProfile.id
                     const canShowPlain = Boolean(profile.childPinPlain)
                     const isCodeVisible = Boolean(visibleChildCodeById[profile.id]) && canShowPlain
 
@@ -2346,7 +2516,6 @@ function App() {
                       <article key={profile.id} className="child-code-card">
                         <div className="child-code-head">
                           <strong>{profile.childName}</strong>
-                          {isActive && <span className="mini">Aktivt barn</span>}
                         </div>
 
                         <input
@@ -2362,7 +2531,22 @@ function App() {
                           }
                         />
 
-                        {CHILD_AUTH_ENDPOINT ? (
+                        {cloud ? (
+                          <>
+                            {cloudCodes[profile.id] && (
+                              <input readOnly value={cloudCodes[profile.id]} aria-label={`Ny barnekode for ${profile.childName}`} />
+                            )}
+                            <p className="mini">
+                              Koden vises bare når den opprettes. Noter den og del den med barnet.
+                              Ved ny kode slutter den gamle å virke.
+                            </p>
+                            <div className="child-code-actions">
+                              <button type="button" onClick={() => replaceChildPinForProfile(profile.id)}>Generer kode</button>
+                              <button type="button" className="danger" onClick={() => removeChildPinForProfile(profile.id)}>Fjern kode</button>
+                              <button type="button" className="danger" onClick={() => removeChildProfile(profile.id)}>Slett barn</button>
+                            </div>
+                          </>
+                        ) : CHILD_AUTH_ENDPOINT ? (
                           <p className="mini">
                             Barnekoder styres av backend når backend-autentisering er aktiv.
                           </p>
@@ -2377,7 +2561,7 @@ function App() {
                               value={profile.childPinHash && profile.childPinSalt ? profile.childPinPlain ?? '********' : ''}
                               placeholder={profile.childPinHash && profile.childPinSalt ? 'Kode finnes' : 'Ingen kode enda'}
                             />
-                            <div className="row-actions">
+                            <div className="child-code-actions">
                               <button
                                 type="button"
                                 disabled={!canShowPlain}
@@ -2404,34 +2588,24 @@ function App() {
                                   Generer kode
                                 </button>
                               )}
+                              <button type="button" className="danger" onClick={() => removeChildProfile(profile.id)}>Slett barn</button>
                             </div>
                           </>
                         )}
 
-                        {!CHILD_AUTH_ENDPOINT && profile.childPinHash && profile.childPinSalt && !profile.childPinPlain && (
+                        {!cloud && !CHILD_AUTH_ENDPOINT && profile.childPinHash && profile.childPinSalt && !profile.childPinPlain && (
                           <p className="mini">
                             Denne koden ble lagret før synlig-kode-funksjonen. Fjern kode og generer ny hvis du vil se den.
                           </p>
                         )}
 
-                        <div className="row-actions">
-                          {!isActive && (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                persist({
-                                  ...state,
-                                  activeChildId: profile.id,
-                                })
-                              }
-                            >
-                              Sett som aktiv
+                        {!cloud && CHILD_AUTH_ENDPOINT && (
+                          <div className="row-actions">
+                            <button type="button" className="danger" onClick={() => removeChildProfile(profile.id)}>
+                              Slett barn
                             </button>
-                          )}
-                          <button type="button" className="danger" onClick={() => removeChildProfile(profile.id)}>
-                            Slett barn
-                          </button>
-                        </div>
+                          </div>
+                        )}
                       </article>
                     )
                   })}
@@ -2439,16 +2613,175 @@ function App() {
               ) : (
                 <p className="mini">Legg til et barn først for å sette navn og kode.</p>
               )}
+              <form className="inline-form" onSubmit={addChildProfile}>
+                <input
+                  placeholder="Legg til nytt barn"
+                  value={newChildName}
+                  onChange={(event) => setNewChildName(event.target.value)}
+                />
+                <button type="submit">Legg til nytt barn</button>
+              </form>
+            </section>
+
+            <section className="settings-module module-children module-child-settings">
+              <h3>
+                <span className="module-glyph" aria-hidden="true">I</span>
+                Barnets innstillinger
+              </h3>
+              <p className="mini module-subtitle">
+                Lønn per periode = fast lønn + lønn for fullførte obligatoriske oppgaver + bonus.
+                Sett et beløp til 0 for å deaktivere den delen.
+              </p>
+              <div className="settings-grid">
+                {!hasProfiles && (
+                  <div className="period-chip">Ingen barn er opprettet ennå. Legg til et barn i modulen over.</div>
+                )}
+                <label>
+                  Rediger innstillinger for
+                  <select
+                    value={hasProfiles ? activeProfile.id : ''}
+                    disabled={!hasProfiles}
+                    onChange={(event) =>
+                      persist({
+                        ...state,
+                        activeChildId: event.target.value,
+                      })
+                    }
+                  >
+                    {state.profiles.map((profile) => (
+                      <option key={profile.id} value={profile.id}>
+                        {profile.childName}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  Fast lønn per {activeProfile.periodType === 'week' ? 'uke' : 'måned'}
+                  <input
+                    type="number"
+                    min={0}
+                    step={0.01}
+                    value={activeProfile.fixedAllowance ?? 0}
+                    disabled={!hasProfiles}
+                    onChange={(event) =>
+                      updateActiveProfile(profile => ({
+                        ...profile,
+                        fixedAllowance: roundMoney(Math.max(0, safeNumber(event.target.value))),
+                      }))
+                    }
+                  />
+                  <span className="mini">Utbetales også uten registrerte oppgaver.</span>
+                </label>
+
+                <label>
+                  Lønn for obligatoriske oppgaver per {activeProfile.periodType === 'week' ? 'uke' : 'måned'}
+                  {editingBaseAllowance && baseAllowanceEditingChildId === activeProfile.id ? (
+                    <div className="allowance-editor">
+                      <input
+                        type="number"
+                        min={0}
+                        value={baseAllowanceDraft}
+                        disabled={!hasProfiles}
+                        onChange={(event) =>
+                          setBaseAllowanceDraft(Math.max(0, Math.floor(safeNumber(event.target.value, 0))))
+                        }
+                      />
+                      <div className="row-actions">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!hasProfiles) {
+                              return
+                            }
+                            updateActiveProfile((profile) => ({
+                              ...profile,
+                              baseAllowance: baseAllowanceDraft,
+                            }))
+                            setEditingBaseAllowance(false)
+                          }}
+                        >
+                          Lagre ukelønn
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary"
+                          onClick={() => {
+                            setBaseAllowanceDraft(activeProfile.baseAllowance)
+                            setEditingBaseAllowance(false)
+                          }}
+                        >
+                          Avbryt
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="allowance-display">
+                      <strong>{hasProfiles ? activeProfile.baseAllowance : 0} kr</strong>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!hasProfiles) {
+                            return
+                          }
+                          setBaseAllowanceDraft(activeProfile.baseAllowance)
+                          setBaseAllowanceEditingChildId(activeProfile.id)
+                          setEditingBaseAllowance(true)
+                        }}
+                      >
+                        Rediger
+                      </button>
+                    </div>
+                  )}
+                  <span className="mini">Utbetales når alle krav er oppfylt. Krever minst én obligatorisk oppgave.</span>
+                </label>
+
+                <label>
+                  Periode
+                  <p className="mini">Velg om barnet får ukelønn eller månedslønn.</p>
+                  <select
+                    value={hasProfiles ? activeProfile.periodType : 'week'}
+                    disabled={!hasProfiles}
+                    onChange={(event) => {
+                      if (currentPeriodEntries.length > 0) {
+                        window.alert('Vent til perioden med registrerte oppgaver er avsluttet før du bytter mellom uke og måned.')
+                        return
+                      }
+                      updateActiveProfile((profile) => ({
+                        ...profile,
+                        periodType: event.target.value as PeriodType,
+                        allowanceStartAt: new Date().toISOString(),
+                      }))
+                    }}
+                  >
+                    <option value="week">Uke</option>
+                    <option value="month">Måned</option>
+                  </select>
+                </label>
+
+                <div className="period-chip">
+                  Aktiv periode: <strong>{currentPeriodLabel}</strong>
+                </div>
+              </div>
+              <p className="mini">
+                Perioder avsluttes automatisk etter periodeskiftet, også uten registreringer.
+                Nye lønnsbeløp gjelder den åpne perioden; avsluttet historikk endres ikke.
+              </p>
             </section>
 
             <section className="settings-module module-security">
               <h3>
                 <span className="module-glyph" aria-hidden="true">A</span>
-                Adminpanel: Foreldrekontoer
+                Foreldre
               </h3>
-              <p className="mini module-subtitle">Lag brukernavn og passord for nye foreldre som skal teste appen.</p>
+              <p className="mini module-subtitle">Lag brukernavn og passord for nye foreldre.</p>
 
-              {isParentAdminSession ? (
+              {cloud ? (
+                <p className="mini">
+                  Foreldrekontoer administreres i Supabase. Testeren bruker «Glemt passord» på innloggingssiden.
+                  Nye testfamilier opprettes med oppsettsskriptet, ikke med lokale kontoer.
+                </p>
+              ) : isParentAdminSession ? (
                 <>
                   <form className="inline-form" onSubmit={createParentAccessAccount}>
                     <input
@@ -2503,32 +2836,12 @@ function App() {
               )}
             </section>
 
-            <section className="settings-module module-children">
-              <h3>
-                <span className="module-glyph" aria-hidden="true">B</span>
-                Legg til barn
-              </h3>
-              <p className="mini module-subtitle">Skriv navn og opprett barnet. Kode håndteres i boksen over.</p>
-
-              <form className="inline-form" onSubmit={addChildProfile}>
-                <input
-                  placeholder="Legg til nytt barn"
-                  value={newChildName}
-                  onChange={(event) => setNewChildName(event.target.value)}
-                />
-                <button type="submit">Legg til nytt barn</button>
-              </form>
-              <p className="mini">
-                Etter opprettelse dukker barnet opp i boksen "Registrerte barn og koder".
-              </p>
-            </section>
-
             <section className="settings-module module-security">
               <h3>
                 <span className="module-glyph" aria-hidden="true">S</span>
                 Sikkerhet
               </h3>
-              <p className="mini module-subtitle">Barnesikkerhet og tips for riktig oppsett.</p>
+              <p className="mini module-subtitle">Tips for trygg og sikker bruk av appen.</p>
 
               {hasProfiles && isDefaultChildName(activeProfile.childName) && (
                 <p className="mini">
@@ -2543,7 +2856,7 @@ function App() {
                 <span className="module-glyph" aria-hidden="true">R</span>
                 Regler
               </h3>
-              <p className="mini module-subtitle">Velg hvilke ekstraregler som gjelder for poeng og trekk.</p>
+              <p className="mini module-subtitle">Velg hvilke regler som gjelder for poeng og bonus.</p>
               <label className="mini remember-check">
                 <input
                   type="checkbox"
@@ -2558,7 +2871,7 @@ function App() {
                     })
                   }
                 />
-                Aktiver poengtrekk (ekstra innstilling)
+                Aktiver poengtrekk
               </label>
               <label className="mini remember-check">
                 <input
@@ -2574,11 +2887,174 @@ function App() {
                     })
                   }
                 />
-                Krev obligatoriske oppgaver før bonus utbetales
+                Krev obligatoriske oppgaver før bonus
               </label>
               <p className="mini">
-                Når innstillingen er av, kan opparbeidede bonuspoeng fortsatt gi bonus selv om obligatoriske oppgaver mangler.
+                Når dette er av, kan opparbeidede bonuspoeng fortsatt gi bonus selv om obligatoriske oppgaver mangler.
               </p>
+              <h4>Regler for poengtrekk</h4>
+              <label>
+                Rediger regler for
+                <select
+                  value={hasProfiles ? activeProfile.id : ''}
+                  disabled={!hasProfiles}
+                  onChange={(event) => persist({ ...state, activeChildId: event.target.value })}
+                >
+                  {state.profiles.map((profile) => (
+                    <option key={profile.id} value={profile.id}>{profile.childName}</option>
+                  ))}
+                </select>
+              </label>
+              <ul className="task-list">
+                {activeProfile.penaltyTasks.map((task) => (
+                  <li key={task.id}>
+                    <label>
+                      Regel
+                      <input value={task.name} onChange={(event) => updatePenaltyTask(task.id, { name: event.target.value })} />
+                    </label>
+                    <label>
+                      Poeng per trekk
+                      <input
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={task.points}
+                        onChange={(event) => updatePenaltyTask(task.id, {
+                          points: Math.max(1, Math.floor(safeNumber(event.target.value, task.points))),
+                        })}
+                      />
+                    </label>
+                    <button type="button" className="danger" onClick={() => removePenaltyTask(task.id)}>Slett regel</button>
+                  </li>
+                ))}
+                {activeProfile.penaltyTasks.length === 0 && <li>Ingen regler for poengtrekk ennå.</li>}
+              </ul>
+              <form className="inline-form" onSubmit={addPenaltyTask}>
+                <input
+                  aria-label="Ny regel for poengtrekk"
+                  placeholder="Hva gir poengtrekk?"
+                  required
+                  disabled={!hasProfiles}
+                  value={newPenaltyName}
+                  onChange={(event) => setNewPenaltyName(event.target.value)}
+                />
+                <input
+                  aria-label="Antall trekkpoeng"
+                  type="number"
+                  min={1}
+                  step={1}
+                  disabled={!hasProfiles}
+                  value={newPenaltyPoints}
+                  onChange={(event) => setNewPenaltyPoints(Math.max(1, Math.floor(safeNumber(event.target.value, 1))))}
+                />
+                <button type="submit" disabled={!hasProfiles}>Legg til regel</button>
+              </form>
+            </section>
+
+            <section className="settings-module module-help">
+              <h3>
+                <span className="module-glyph" aria-hidden="true">?</span>
+                Hvordan appen fungerer
+              </h3>
+              <p className="mini module-subtitle">Kort guide til hvordan du bruker appen.</p>
+              <ol className="mini">
+                <li>Legg til barn og velg barnet du vil redigere lønn og periode for.</li>
+                <li>Opprett oppgaver som barn kan gjøre for poeng eller penger. Bruk avkrysningene for å velge hvilke barn oppgaven gjelder for.</li>
+                <li>Barn registrerer utførte oppgaver fra sin egen innlogging. Foreldre følger registreringene under Registreringer.</li>
+                <li>Forhåndsvis barnesiden viser ekte data, men lar deg ikke registrere oppgaver som forelder.</li>
+                <li>Lag regler for poengtrekk under Regler. Barnet ser dem under Hva kan gi poengtrekk? Ingen poeng trekkes når en regel opprettes; først når forelderen trykker Utfør trekk.</li>
+                <li>Oppgaver oppdaterer lønnsprognosen. Lønn føres i banken når perioden avsluttes.</li>
+                <li>Bruk regler for obligatoriske oppgaver, bonusnivåer, renter og trekk for å tilpasse appen.</li>
+                <li>Se oversikt, banken og historikk for å følge utviklingen over tid.</li>
+              </ol>
+            </section>
+
+            <section className="settings-module module-levels">
+              <h3>
+                <span className="module-glyph" aria-hidden="true">N</span>
+                Bonusnivåer
+              </h3>
+              <p className="mini module-subtitle">Legg til nivåer som gir ekstra lønn når barnet får nok poeng.</p>
+              <ul className="task-list">
+                {sortedLevels.map((level) => (
+                  <li key={level.id}>
+                    <div className="level-row">
+                      {canManageTaskSetup ? (
+                        <input
+                          value={level.name}
+                          onChange={(event) => updateLevel(level.id, { name: event.target.value })}
+                        />
+                      ) : (
+                        <strong>{level.name}</strong>
+                      )}
+                      <div className="mini level-inline-grid">
+                        <label>
+                          <span>Min. poeng</span>
+                          <input
+                            type="number"
+                            min={1}
+                            disabled={!canManageTaskSetup}
+                            value={level.minPoints}
+                            onChange={(event) =>
+                              updateLevel(level.id, {
+                                minPoints: Math.max(1, Math.floor(safeNumber(event.target.value, level.minPoints))),
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          <span>Ekstra kr</span>
+                          <input
+                            type="number"
+                            min={0}
+                            disabled={!canManageTaskSetup}
+                            value={level.extraAmount}
+                            onChange={(event) =>
+                              updateLevel(level.id, {
+                                extraAmount: Math.max(0, Math.floor(safeNumber(event.target.value, level.extraAmount))),
+                              })
+                            }
+                          />
+                        </label>
+                      </div>
+                    </div>
+                    {canManageTaskSetup && (
+                      <button type="button" className="danger" onClick={() => removeLevel(level.id)}>
+                        Slett
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+
+              {canManageTaskSetup && (
+                <form className="inline-form level-form" onSubmit={addRewardLevel}>
+                  <input
+                    placeholder="Nivånavn"
+                    value={newLevelName}
+                    onChange={(event) => setNewLevelName(event.target.value)}
+                  />
+                  <label className="mini">
+                    Min. poeng
+                    <input
+                      type="number"
+                      min={1}
+                      value={newLevelPoints}
+                      onChange={(event) => setNewLevelPoints(Math.max(1, safeNumber(event.target.value, 1)))}
+                    />
+                  </label>
+                  <label className="mini">
+                    Ekstra kr
+                    <input
+                      type="number"
+                      min={0}
+                      value={newLevelAmount}
+                      onChange={(event) => setNewLevelAmount(Math.max(0, safeNumber(event.target.value, 0)))}
+                    />
+                  </label>
+                  <button type="submit">Legg til nivå</button>
+                </form>
+              )}
             </section>
 
             <section className="settings-module module-interest">
@@ -2586,11 +3062,11 @@ function App() {
                 <span className="module-glyph" aria-hidden="true">%</span>
                 Renter
               </h3>
-              <p className="mini module-subtitle">Styr rentenivået som brukes på ikke utbetalt opptjening.</p>
+              <p className="mini module-subtitle">Velg hvordan renter skal regnes på ubetalt opptjening.</p>
               <div className="task-targets">
                 <div className="settings-grid">
                   <label>
-                    Rentesats (%)
+                    Rente (%)
                     <input
                       type="number"
                       min={0}
@@ -2609,7 +3085,7 @@ function App() {
                   </label>
 
                   <label>
-                    Forrenting
+                    Hvor ofte
                     <select
                       value={state.parentSettings.interestPeriod}
                       onChange={(event) =>
@@ -2628,65 +3104,26 @@ function App() {
                     </select>
                   </label>
                 </div>
-                <p className="mini">Uttatte perioder får ikke renter.</p>
-              </div>
-            </section>
-
-            <section className="settings-module module-targets">
-              <h3>
-                <span className="module-glyph" aria-hidden="true">M</span>
-                Målrett oppgaver
-              </h3>
-              <p className="mini module-subtitle">Velg hvilke barn nye oppgaver skal legges til for.</p>
-              <div className="task-targets">
-                <p className="mini">Nye oppgaver blir lagt til for avkryssede barn:</p>
-                <div className="target-quick-actions">
-                  <button type="button" onClick={selectAllTargetChildren}>
-                    Velg alle
-                  </button>
-                  <button type="button" onClick={clearTargetChildren}>
-                    Fjern alle
-                  </button>
-                  <button type="button" onClick={selectOnlyActiveChild}>
-                    Kun aktivt barn
-                  </button>
-                </div>
-                {taskTargetChildIds.length === 0 && (
-                  <p className="mini">Ingen valgt. Velg minst ett barn for å legge til oppgaver.</p>
-                )}
-                <div className="task-target-list">
-                  {state.profiles.map((profile) => (
-                    <label key={profile.id} className="target-pill">
-                      <input
-                        type="checkbox"
-                        checked={taskTargetChildIds.includes(profile.id)}
-                        onChange={(event) =>
-                          updateSelectedChildrenForTasks(profile.id, event.target.checked)
-                        }
-                      />
-                      {profile.childName}
-                    </label>
-                  ))}
-                </div>
+                <p className="mini">Perioder som er avsluttet får ikke renter.</p>
               </div>
             </section>
 
             <section className="settings-module module-backup">
               <h3>
                 <span className="module-glyph" aria-hidden="true">D</span>
-                Backup og eksport
+                Sikkerhetskopi og eksport
               </h3>
-              <p className="mini module-subtitle">Ta backup, hent ut historikk og importer data ved behov.</p>
+              <p className="mini module-subtitle">Ta backup, hent historikk og importer data når du trenger det.</p>
               <div className="task-targets">
                 <div className="target-quick-actions">
                   <button type="button" onClick={exportBackupJson}>
-                    Eksporter backup (JSON)
+                    Eksporter kopi (JSON)
                   </button>
                   <button type="button" onClick={exportSettlementsCsv}>
                     Eksporter utbetalinger (CSV)
                   </button>
                   <button type="button" onClick={() => importInputRef.current?.click()}>
-                    Importer backup
+                    Importer kopi
                   </button>
                 </div>
                 <input
@@ -2703,56 +3140,68 @@ function App() {
       </section>}
 
       {activeTab === 'overview' && <section className="card summary-card">
-        <h2>Status nå - {activeProfile.childName}</h2>
-        <div className="kpi-grid">
-          <article>
+        <h2>Status nå - {!isChildMode
+          ? (dashboardIsAll ? 'Alle barn' : dashboardSelected?.profile.childName ?? activeProfile.childName)
+          : activeProfile.childName}</h2>
+        <div className="summary-panel-list">
+          <article className="summary-panel-item">
             <p>Opparbeidet ukelønn nå</p>
-            <strong>{projectedTotalAllowance} kr</strong>
+            <strong>{!isChildMode ? dashboardProjectedTotalAllowance : projectedTotalAllowance} kr</strong>
           </article>
-          <article>
+          <article className="summary-panel-item">
             <p>Obligatoriske oppgaver</p>
-            <strong>{mandatoryMet ? 'Krav oppfylt' : 'Krav ikke oppfylt'}</strong>
+            <strong>{!isChildMode
+              ? (dashboardMandatoryMet ? 'Krav oppfylt' : 'Krav ikke oppfylt')
+              : (mandatoryMet ? 'Krav oppfylt' : 'Krav ikke oppfylt')}</strong>
           </article>
-          <article>
+          <article className="summary-panel-item">
             <p>Opptjente poeng</p>
-            <strong>{bonusPointsThisPeriod} poeng</strong>
+            <strong>{!isChildMode ? dashboardBonusPoints : bonusPointsThisPeriod} poeng</strong>
           </article>
           {state.parentSettings.penaltyEnabled && (
-            <article>
+            <article className="summary-panel-item">
               <p>Poengtrekk</p>
-              <strong>-{penaltyPointsThisPeriod} poeng</strong>
+              <strong>-{!isChildMode ? dashboardPenaltyPoints : penaltyPointsThisPeriod} poeng</strong>
             </article>
           )}
-          <article>
+          <article className="summary-panel-item">
             <p>Netto poeng denne perioden</p>
-            <strong>{netPointsThisPeriod} poeng</strong>
+            <strong>{!isChildMode ? dashboardNetPoints : netPointsThisPeriod} poeng</strong>
           </article>
           {!isChildMode && (
-            <article>
+            <article className="summary-panel-item compact-panel-item">
               <p>Rentekonto saldo</p>
-              <strong>{unpaidSettlementsTotalWithInterest} kr</strong>
-              <span>{unpaidSettlementsInterest} kr renter (kun uten uttak)</span>
+              <div className="summary-panel-meta">
+                <strong>{dashboardUnpaidSummary.totalWithInterest} kr</strong>
+                <span>{dashboardUnpaidSummary.interest} kr i gjenværende opptjente renter</span>
+              </div>
             </article>
           )}
           {!isChildMode && (
-            <article>
+            <article className="summary-panel-item compact-panel-item">
               <p>Totalt opptjent ukelønn</p>
-              <strong>{totalEarnedAllowance} kr</strong>
-              <span>Fra avsluttede perioder</span>
+              <div className="summary-panel-meta">
+                <strong>{dashboardTotalEarnedAllowance} kr</strong>
+                <span>Fra avsluttede perioder</span>
+              </div>
             </article>
           )}
           {!isChildMode && (
-            <article>
+            <article className="summary-panel-item compact-panel-item">
               <p>Totalt tatt ut</p>
-              <strong>{totalWithdrawnAllowance} kr</strong>
-              <span>Markert som utbetalt</span>
+              <div className="summary-panel-meta">
+                <strong>{dashboardTotalWithdrawnAllowance} kr</strong>
+                <span>Registrerte uttak fra banken</span>
+              </div>
             </article>
           )}
         </div>
         <p className="summary-line">
-          Nivå nå: <strong>{reachedLevelNow?.name ?? 'Ingen nivå ennå'}</strong>. Poeng som blir
-          med videre: <strong>{projectedCarryOut}</strong>. Overført inn i perioden:{' '}
-          <strong>{activeProfile.carryPoints}</strong>.
+          Nivå nå: <strong>{!isChildMode
+            ? (dashboardIsAll ? 'Flere nivåer' : dashboardSelected?.reachedLevelName ?? 'Ingen nivå ennå')
+            : (reachedLevelNow?.name ?? 'Ingen nivå ennå')}</strong>. Poeng som blir
+          med videre: <strong>{!isChildMode ? dashboardProjectedCarryOut : projectedCarryOut}</strong>. Overført inn i perioden:{' '}
+          <strong>{!isChildMode ? dashboardSelection.reduce((sum, item) => sum + item.profile.carryPoints, 0) : activeProfile.carryPoints}</strong>.
         </p>
         {!isChildMode && <p className="summary-line summary-secondary">Trend: <strong>{payoutTrendLabel}</strong>.</p>}
         {!isChildMode && <p className="summary-line summary-secondary">
@@ -2771,115 +3220,134 @@ function App() {
 
       {activeTab === 'account' && canManage && !isChildMode && <section className="card rent-account-card">
         <h2>Banken</h2>
-        <p className="mini">
-          Renter beregnes kun for perioder som ikke er markert som utbetalt.
-        </p>
-        <div className="rent-account-table-wrap">
-          <table className="rent-account-table">
-            <tbody>
-              <tr>
-                <th scope="row">Totalt opptjent ukelønn (innskudd)</th>
-                <td>{totalEarnedAllowance} kr</td>
-              </tr>
-              <tr>
-                <th scope="row">Manuelle innskudd</th>
-                <td>{activeProfile.bankDeposits} kr</td>
-              </tr>
-              <tr>
-                <th scope="row">Aktiv rentesats</th>
-                <td>
-                  {state.parentSettings.interestRatePct}% per{' '}
-                  {state.parentSettings.interestPeriod === 'week'
-                    ? 'uke'
-                    : state.parentSettings.interestPeriod === 'month'
-                      ? 'måned'
-                      : 'år'}
-                </td>
-              </tr>
-              <tr>
-                <th scope="row">Totalt tatt ut (uttak)</th>
-                <td>{totalWithdrawnDisplay}</td>
-              </tr>
-              <tr>
-                <th scope="row">
-                  Opptjente renter ({state.parentSettings.interestRatePct}% per{' '}
-                  {state.parentSettings.interestPeriod === 'week'
-                    ? 'uke'
-                    : state.parentSettings.interestPeriod === 'month'
-                      ? 'måned'
-                      : 'år'})
-                </th>
-                <td>+{unpaidSettlementsInterest} kr</td>
-              </tr>
-              <tr className="rent-account-total-row">
-                <th scope="row">Banksaldo med renter</th>
-                <td>{unpaidSettlementsTotalWithInterest + activeProfile.bankDeposits} kr</td>
-              </tr>
-            </tbody>
-          </table>
+        <div className="task-targets">
+          <label className="bank-child-selector">
+            <span className="mini">Vis bank for</span>
+            <select
+              value={effectiveBankChildId}
+              onChange={(event) => setBankChildId(event.target.value)}
+            >
+              <option value="all">Alle barn</option>
+              {state.profiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {formatChildNameForDisplay(profile.childName)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <p className="mini">
+            {effectiveBankChildId === 'all'
+              ? 'Samlet status for alle barn. Opptjente renter er ekte saldo og kan tas ut.'
+              : `Status for ${formatChildNameForDisplay(bankSelectedProfile?.childName ?? '')}. Opptjente renter er ekte saldo og kan tas ut.`}
+          </p>
+          <div className="bank-balance-hero">
+            <span>Banksaldo med renter</span>
+            <strong>{bankSummary.balance.toLocaleString('nb-NO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kr</strong>
+            <span className="bank-balance-caption">Tilgjengelig i banken</span>
+          </div>
+          <dl className="bank-stat-grid">
+            <div>
+              <dt>Opptjent lønn</dt>
+              <dd>{bankSummary.earned.toLocaleString('nb-NO')} kr</dd>
+              <span>Fra avsluttede perioder</span>
+            </div>
+            <div>
+              <dt>Manuelle innskudd</dt>
+              <dd>{bankSummary.deposits.toLocaleString('nb-NO')} kr</dd>
+              <span>Totalt satt inn</span>
+            </div>
+            <div>
+              <dt>Totalt tatt ut</dt>
+              <dd>{bankSummary.withdrawn === 0 ? '0' : `−${bankSummary.withdrawn.toLocaleString('nb-NO')}`} kr</dd>
+              <span>Registrerte uttak</span>
+            </div>
+            <div className="bank-stat-interest">
+              <dt>Opptjente renter</dt>
+              <dd>+{bankSummary.interest.toLocaleString('nb-NO')} kr</dd>
+              <span>Renter som står i banken</span>
+            </div>
+          </dl>
+          <p className="bank-rate-note">
+            <strong>Aktiv rentesats:</strong> {state.parentSettings.interestRatePct}% per{' '}
+            {state.parentSettings.interestPeriod === 'week'
+              ? 'uke'
+              : state.parentSettings.interestPeriod === 'month' ? 'måned' : 'år'}
+          </p>
         </div>
       </section>}
 
       {activeTab === 'account' && canManage && !isChildMode && <section className="card">
-        <h2>Bankoversikt</h2>
-        <label className="bank-child-selector">
-          <span className="mini">Vis bank for</span>
-          <select
-            value={activeProfile.id}
-            onChange={(event) => persist({ ...state, activeChildId: event.target.value })}
-          >
-            {state.profiles.map((profile) => (
-              <option key={profile.id} value={profile.id}>
-                {formatChildNameForDisplay(profile.childName)}
-              </option>
-            ))}
-          </select>
-        </label>
-        <p className="mini">Samlet oversikt for {formatChildNameForDisplay(activeProfile.childName)}.</p>
-        <div className="task-targets">
-          <p className="mini">Sett inn eller ta ut penger fra barnets bank.</p>
-          <form className="inline-form" onSubmit={registerDepositToBank}>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              placeholder="Sett inn (kr)"
-              value={depositAmountInput}
-              onChange={(event) => setDepositAmountInput(event.target.value)}
-            />
-            <button type="submit">Sett inn</button>
-          </form>
-          <form className="inline-form" onSubmit={registerWithdrawalFromBank}>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              placeholder="Ta ut (kr)"
-              value={withdrawalAmountInput}
-              onChange={(event) => setWithdrawalAmountInput(event.target.value)}
-            />
-            <button type="submit">Ta ut</button>
-            <button
-              type="button"
-              onClick={() => setWithdrawalAmountInput(String(bankBalance))}
+        <h2>Banken</h2>
+        <div className="task-targets bank-panel">
+          <label className="bank-child-selector">
+            <span className="mini">Gjelder for</span>
+            <select
+              value={effectiveBankChildId}
+              onChange={(event) => setBankChildId(event.target.value)}
             >
-              Bruk maks
-            </button>
-          </form>
-        </div>
-        <div className="kpi-grid child-savings-kpis">
-          <article>
-            <p>Totalt opptjent</p>
-            <strong>{totalEarnedAllowance} kr</strong>
-          </article>
-          <article>
-            <p>Totalt tatt ut</p>
-            <strong>{totalWithdrawnAllowance} kr</strong>
-          </article>
-          <article>
-            <p>Hovedsaldo</p>
-            <strong>{bankBalance} kr</strong>
-          </article>
+              <option value="all">Alle barn</option>
+              {state.profiles.map((profile) => (
+                <option key={profile.id} value={profile.id}>
+                  {formatChildNameForDisplay(profile.childName)}
+                </option>
+              ))}
+            </select>
+          </label>
+          {bankSelectedProfile ? (
+            <>
+              <div className="bank-summary-pills">
+                <div>
+                  <span className="mini">Saldo</span>
+                  <strong>{bankSelectedBalance} kr</strong>
+                </div>
+                <div>
+                  <span className="mini">Poeng</span>
+                  <strong>{bankSelectedProfile.carryPoints}</strong>
+                </div>
+              </div>
+              <p className="mini">Sett inn penger eller trekk fra {formatChildNameForDisplay(bankSelectedProfile.childName)} sin bank.</p>
+              <div className="bank-mode-toggle" aria-label="Velg hva som skal trekkes">
+                <button
+                  type="button"
+                  className={bankWithdrawalMode === 'money' ? 'is-active' : ''}
+                  onClick={() => setBankWithdrawalMode('money')}
+                >
+                  Penger
+                </button>
+                <button
+                  type="button"
+                  className={bankWithdrawalMode === 'points' ? 'is-active' : ''}
+                  onClick={() => setBankWithdrawalMode('points')}
+                >
+                  Poeng
+                </button>
+              </div>
+              <form className="inline-form" onSubmit={registerDepositToBank}>
+                <input
+                  type="number"
+                  min={0}
+                  step={bankWithdrawalMode === 'points' ? 1 : 0.01}
+                  placeholder={bankWithdrawalMode === 'points' ? 'Sett inn poeng' : 'Sett inn (kr)'}
+                  value={depositAmountInput}
+                  onChange={(event) => setDepositAmountInput(event.target.value)}
+                />
+                <button type="submit">{bankWithdrawalMode === 'points' ? 'Sett inn poeng' : 'Sett inn'}</button>
+              </form>
+              <form className="inline-form" onSubmit={registerWithdrawalFromBank}>
+                <input
+                  type="number"
+                  min={0}
+                  step={bankWithdrawalMode === 'points' ? 1 : 0.01}
+                  placeholder={bankWithdrawalMode === 'points' ? 'Trekk poeng' : 'Ta ut (kr)'}
+                  value={withdrawalAmountInput}
+                  onChange={(event) => setWithdrawalAmountInput(event.target.value)}
+                />
+                <button type="submit">{bankWithdrawalMode === 'points' ? 'Trekk poeng' : 'Ta ut'}</button>
+              </form>
+            </>
+          ) : (
+            <p className="mini">Velg ett barn for å registrere innskudd eller uttak.</p>
+          )}
         </div>
       </section>}
 
@@ -2896,83 +3364,62 @@ function App() {
         </p>
         <div className="kpi-grid child-savings-kpis">
           <article>
-            <p>Sparepenger nå</p>
-            <strong>{unpaidSettlementsTotalWithInterest + activeProfile.bankDeposits} kr</strong>
-          </article>
-          <article>
-            <p>Ekstra fra renter</p>
-            <strong>{unpaidSettlementsInterest} kr</strong>
-          </article>
-        </div>
-        <p className="summary-line summary-secondary">
-          Når penger tas ut, stopper renter på den delen.
-        </p>
-      </section>}
-
-      {activeTab === 'account' && isChildMode && <section className="card">
-        <h2>Banken</h2>
-        <p className="mini">Her ser du hva som er tjent opp totalt og hva som eventuelt er tatt ut.</p>
-        <div className="kpi-grid child-savings-kpis">
-          <article>
-            <p>Totalt opptjent</p>
+            <p>Totalt tjent</p>
             <strong>{totalEarnedAllowance} kr</strong>
           </article>
           <article>
             <p>Totalt tatt ut</p>
             <strong>{totalWithdrawnAllowance} kr</strong>
+            <span className="mini">Opptjente renter beholdes. Uttatte penger gir ikke nye renter.</span>
           </article>
           <article>
-            <p>Hovedsaldo</p>
-            <strong>{bankBalance} kr</strong>
+            <p>Sparepenger</p>
+            <strong>{childSavingsBeforeInterest} kr</strong>
+          </article>
+          <article>
+            <p>Ekstra fra renter</p>
+            <strong>+{unpaidSettlementsInterest} kr</strong>
+          </article>
+          <article className="child-savings-total">
+            <p>Total saldo</p>
+            <strong>{unpaidSettlementsTotalWithInterest} kr</strong>
           </article>
         </div>
       </section>}
 
+      {activeTab === 'account' && (
+        <section className="card">
+          <h2>Transaksjonshistorikk</h2>
+          <p className="mini">
+            Lønn, innskudd, uttak, opptjente renter og manuelle poengjusteringer.
+            Renter legges til saldoen etter hele renteperioder fra hvert innskudd.
+          </p>
+          <ul className="history-list">
+            {(isChildMode ? [activeProfile] : bankProfiles).flatMap(profile =>
+              (profile.transactions ?? []).map(transaction => ({ ...transaction, childName: profile.childName })))
+              .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+              .map(transaction => (
+                <li key={transaction.id}>
+                  <div>
+                    <strong>{transaction.description}</strong>
+                    <p className="mini">{transaction.childName} · {new Date(transaction.timestamp).toLocaleString('nb-NO')}</p>
+                  </div>
+                  <strong>
+                    {transaction.type === 'points'
+                      ? `${(transaction.pointsDelta ?? 0) > 0 ? '+' : ''}${transaction.pointsDelta ?? 0} poeng`
+                      : `${transaction.amount > 0 ? '+' : ''}${transaction.amount.toLocaleString('nb-NO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kr`}
+                  </strong>
+                </li>
+              ))}
+            {(isChildMode ? [activeProfile] : bankProfiles).every(profile => (profile.transactions ?? []).length === 0) && (
+              <li>Ingen transaksjoner ennå.</li>
+            )}
+          </ul>
+          {canManage && <button type="button" onClick={exportTransactionsCsv}>Eksporter transaksjoner (CSV)</button>}
+        </section>
+      )}
+
       {activeTab === 'tasks' && <section className="grid-two">
-        {isChildMode && !canRegisterTasks && (
-          <div className="card chart-span-2">
-            <p className="mini">
-              Du er i barnetest-visning som forelder. For å registrere utførte oppgaver må du logge
-              inn som barnet.
-            </p>
-            <label className="mini remember-check">
-              <input
-                type="checkbox"
-                checked={parentTestRegistrationEnabled}
-                onChange={(event) => setParentTestRegistrationEnabled(event.target.checked)}
-              />
-              Aktiver testregistrering i denne visningen
-            </label>
-            {parentTestRegistrationEnabled && (
-              <p className="mini">
-                Testregistrering er aktiv. Klikk på + Registrer utført for å simulere barnet.
-              </p>
-            )}
-          </div>
-        )}
-        {canManageTaskSetup && (
-          <div className="card chart-span-2">
-            <p className="mini">
-              Barn registrerer utførte oppgaver. Du som forelder kan følge alt under fanen
-              Registreringer.
-            </p>
-            <p className="mini">
-              Oppgavefanen gjelder alle registrerte barn: bruk avkrysningene ved registrering av
-              nye oppgaver for å velge hvem oppgaven gjelder for.
-            </p>
-            <label className="mini remember-check">
-              <input
-                type="checkbox"
-                checked={parentTestRegistrationEnabled}
-                onChange={(event) => setParentTestRegistrationEnabled(event.target.checked)}
-              />
-              Aktiver testregistrering i foreldremodus
-            </label>
-            {parentTestRegistrationEnabled && (
-              <p className="mini">Testregistrering er aktiv: du kan simulere barnets registreringer her.</p>
-            )}
-          </div>
-        )}
         {canManage && !isChildMode && mustRenameDefaultChildBeforeTaskSetup && (
           <div className="card chart-span-2">
             <p className="mini">
@@ -2983,103 +3430,6 @@ function App() {
         )}
         <div className="card">
           <h2>Obligatoriske oppgaver</h2>
-          <ul className="task-list">
-            {activeProfile.mandatoryTasks.map((task) => (
-              <li key={task.id}>
-                <div>
-                  {canManageTaskSetup ? (
-                    <input
-                      value={task.name}
-                      disabled={!canManageTaskSetup}
-                      onChange={(event) => updateMandatoryTask(task.id, { name: event.target.value })}
-                    />
-                  ) : (
-                    <strong>{task.name}</strong>
-                  )}
-                  <div className="mandatory-meta-line">
-                    <span className="mini">Må gjøres</span>
-                    {canManageTaskSetup ? (
-                      <input
-                        className="required-count-inline"
-                        type="number"
-                        min={1}
-                        disabled={!canManageTaskSetup}
-                        value={task.requiredCount}
-                        onChange={(event) =>
-                          updateMandatoryTask(task.id, {
-                            requiredCount: Math.max(
-                              1,
-                              Math.floor(safeNumber(event.target.value, task.requiredCount)),
-                            ),
-                          })
-                        }
-                      />
-                    ) : (
-                      <strong>{task.requiredCount}</strong>
-                    )}
-                    <span className="mini">ganger</span>
-                    <span className="mini mandatory-registered">
-                      Registrert: {mandatoryCountMap[task.id] ?? 0} / {task.requiredCount}
-                    </span>
-                  </div>
-                  {(canManage || canRegisterTasksInCurrentView) && (
-                    <ul className="registered-dates">
-                      {currentPeriodEntries
-                        .filter((entry) => entry.taskType === 'mandatory' && entry.taskId === task.id)
-                        .map((entry) => (
-                          <li key={entry.id}>
-                            <span>
-                              {new Date(entry.timestamp).toLocaleDateString('nb-NO', {
-                                weekday: 'short',
-                                day: '2-digit',
-                                month: '2-digit',
-                              })}
-                            </span>
-                            <button
-                              type="button"
-                              className="remove-date"
-                              onClick={() => removeEntry(entry.id)}
-                              aria-label={`Fjern registrering av ${task.name}`}
-                            >
-                              ×
-                            </button>
-                          </li>
-                        ))}
-                    </ul>
-                  )}
-                  {canManageTaskSetup && (
-                    <p className="mini task-applies-to">
-                      Gjelder for: {getChildrenForTask('mandatory', task.name, task.requiredCount).join(', ') || 'Ingen'}
-                    </p>
-                  )}
-                </div>
-                <div className="row-actions">
-                  {(isChildMode || (canManage && parentTestRegistrationEnabled)) && (
-                    <button
-                      type="button"
-                      className="register-plus"
-                      onClick={() => addEntry('mandatory', task.id)}
-                      disabled={!canRegisterTasksInCurrentView}
-                      aria-label={`Registrer ${task.name} som utført`}
-                    >
-                      + Registrer utført
-                    </button>
-                  )}
-                  {canManageTaskSetup && (
-                    <button
-                      type="button"
-                      className="danger"
-                      disabled={!canManageTaskSetup}
-                      onClick={() => removeMandatoryTask(task.id)}
-                    >
-                      Slett
-                    </button>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-
           {canManageTaskSetup && (
             <div className="task-targets compact-targets">
               <p className="mini">Oppgaven gjelder for:</p>
@@ -3111,28 +3461,132 @@ function App() {
           )}
 
           {canManageTaskSetup && (
-            <form className="inline-form" onSubmit={addMandatoryTask}>
+            <form className="inline-form bonus-form" onSubmit={addMandatoryTask}>
               <input
                 placeholder="Ny obligatorisk oppgave"
                 value={newMandatoryName}
                 onChange={(event) => setNewMandatoryName(event.target.value)}
               />
-              <input
-                type="number"
-                min={1}
-                value={newMandatoryCount}
-                onChange={(event) =>
-                  setNewMandatoryCount(Math.max(1, safeNumber(event.target.value, 1)))
-                }
-              />
+              <div className="mandatory-add-actions">
+              <label className="mandatory-count-field">
+                Antall ganger
+                <input
+                  type="number"
+                  min={1}
+                  step={1}
+                  required
+                  value={newMandatoryCount}
+                  onChange={(event) => setNewMandatoryCount(event.target.value)}
+                />
+              </label>
               <button type="submit">Legg til</button>
+              </div>
             </form>
           )}
+          <ul className="task-list">
+            {activeProfile.mandatoryTasks.map((task) => {
+              const completedCount = mandatoryCountMap[task.id] ?? 0
+              const taskStatus = completedCount >= task.requiredCount ? 'done' : completedCount > 0 ? 'partial' : 'new'
+              return (
+                <li key={task.id} className={`bonus-compact-task task-status-${taskStatus}`}>
+                  <div className="bonus-compact-content">
+                    <div className="mandatory-compact-top">
+                      <strong className="bonus-task-name">{task.name}</strong>
+                      <span className="mini">
+                        {completedCount}/{task.requiredCount} ganger · {taskStatus === 'done' ? 'Ferdig' : taskStatus === 'partial' ? 'Påbegynt' : 'Ikke startet'}
+                      </span>
+                    </div>
+                    <div className="bonus-compact-bottom">
+                      <p className="mini task-applies-to">
+                        {getChildrenForTask('mandatory', task.name, task.requiredCount).join(', ') || 'Ingen'}
+                      </p>
+                      {canRegisterTasks && (
+                        <button
+                          type="button"
+                          className="register-plus"
+                          onClick={() => addEntry('mandatory', task.id)}
+                          disabled={taskStatus === 'done'}
+                          aria-label={`Registrer ${task.name} som utført`}
+                        >
+                          + Registrer utført
+                        </button>
+                      )}
+                      {canManageTaskSetup && (
+                        <button type="button" className="danger" onClick={() => removeMandatoryTask(task.id)}>
+                          Slett
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </li>
+              )
+            })}
+          </ul>
         </div>
 
         <div className="card">
           <h2>Ekstraoppgaver og poeng</h2>
-          {!canRegisterTasksInCurrentView && <p className="mini">Kun barn kan registrere utførte oppgaver.</p>}
+
+          {canManageTaskSetup && (
+            <>
+              <div className="task-targets compact-targets">
+                <p className="mini">Oppgaven gjelder for:</p>
+                <label className="target-pill">
+                  <input
+                    type="checkbox"
+                    checked={taskTargetChildIds.length === state.profiles.length}
+                    onChange={(event) =>
+                      event.target.checked ? selectAllTargetChildren() : clearTargetChildren()
+                    }
+                  />
+                  Alle barn
+                </label>
+                <div className="task-target-list">
+                  {state.profiles.map((profile) => (
+                    <label key={profile.id} className="target-pill">
+                      <input
+                        type="checkbox"
+                        checked={taskTargetChildIds.includes(profile.id)}
+                        onChange={(event) =>
+                          updateSelectedChildrenForTasks(profile.id, event.target.checked)
+                        }
+                      />
+                      {profile.childName}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <form className="inline-form bonus-form" onSubmit={addBonusTask}>
+                <input
+                  placeholder="Ny ekstraoppgave"
+                  value={newBonusName}
+                  onChange={(event) => setNewBonusName(event.target.value)}
+                />
+                <label className="mini bonus-points-field">
+                  Poeng
+                  <input
+                    type="number"
+                    min={1}
+                    value={newBonusPoints}
+                    onChange={(event) =>
+                      setNewBonusPoints(Math.max(1, safeNumber(event.target.value, 1)))
+                    }
+                  />
+                </label>
+                <div className="bonus-add-actions">
+                  <label className="mini up-for-grabs-toggle">
+                    <input
+                      type="checkbox"
+                      checked={newBonusUpForGrabs}
+                      onChange={(event) => setNewBonusUpForGrabs(event.target.checked)}
+                    />
+                    Up for grabs
+                  </label>
+                  <button type="submit">Legg til</button>
+                </div>
+              </form>
+            </>
+          )}
 
           <ul className="task-list">
             {canManageTaskSetup
@@ -3145,52 +3599,22 @@ function App() {
                     ? bonusTakenByChildByTaskKey.get(taskKey)
                     : activeProfile.childName
                   return (
-                  <li key={task.id}>
-                    <div>
-                      <input
-                        value={task.name}
-                        disabled={!canManageTaskSetup}
-                        onChange={(event) => updateBonusTask(task.id, { name: event.target.value })}
-                      />
-                      <div className="bonus-meta-line">
-                        <span className="mini">Poeng</span>
-                        <input
-                          className="required-count-inline"
-                          type="number"
-                          min={1}
-                          disabled={!canManageTaskSetup}
-                          value={task.points}
-                          onChange={(event) =>
-                            updateBonusTask(task.id, {
-                              points: Math.max(1, Math.floor(safeNumber(event.target.value, task.points))),
-                            })
-                          }
-                        />
-                        <label className="mini up-for-grabs-toggle">
-                          <input
-                            type="checkbox"
-                            disabled={!canManageTaskSetup}
-                            checked={task.upForGrabs}
-                            onChange={(event) => updateBonusTask(task.id, { upForGrabs: event.target.checked })}
-                          />
-                          Up for grabs
-                        </label>
-                        <span className="mini bonus-registered">
-                          {alreadyTaken
-                            ? task.upForGrabs
-                              ? `Tatt av ${takenByChild ?? 'noen'}`
-                              : 'Gjort denne perioden'
-                            : 'Ikke tatt ennå'}
-                        </span>
-                        {canRegisterTasksInCurrentView && (
-                          <button
-                            type="button"
-                            onClick={() => addEntry('bonus', task.id)}
-                            disabled={alreadyTaken}
-                          >
-                            {alreadyTaken ? 'Tatt' : 'Registrer utført'}
-                          </button>
-                        )}
+                  <li key={task.id} className={`bonus-compact-task task-status-${alreadyTaken ? 'done' : 'new'}`}>
+                    <div className="bonus-compact-content">
+                      <div className="bonus-compact-top">
+                        <strong className="bonus-task-name">{task.name}</strong>
+                        <span className="bonus-compact-points">{task.points} poeng</span>
+                        {task.upForGrabs && <span className="mini bonus-task-shared">Up for grabs</span>}
+                      </div>
+                      <div className="bonus-compact-bottom">
+                        <p className="mini task-applies-to" title={alreadyTaken
+                          ? task.upForGrabs ? `Tatt av ${takenByChild ?? 'noen'}` : 'Gjort denne perioden'
+                          : 'Ikke tatt ennå'}>
+                          <span className="bonus-task-label">Opprettet ekstraoppgave</span>
+                          {' · '}
+                          {getChildrenForTask('bonus', task.name, task.points).join(', ') || 'Ingen'}
+                          {alreadyTaken && ' · Utført'}
+                        </p>
                         <button
                           type="button"
                           className="danger"
@@ -3200,9 +3624,6 @@ function App() {
                           Slett
                         </button>
                       </div>
-                      <p className="mini task-applies-to">
-                        Gjelder for: {getChildrenForTask('bonus', task.name, task.points).join(', ') || 'Ingen'}
-                      </p>
                     </div>
                   </li>
                   )
@@ -3216,9 +3637,9 @@ function App() {
                     : activeProfile.childName
                   const activeChildTask = activeProfileBonusTaskByKey.get(task.key)
                   const canRegisterThisTask =
-                    canRegisterTasksInCurrentView && Boolean(activeChildTask) && !alreadyTaken
+                    canRegisterTasks && Boolean(activeChildTask) && !alreadyTaken
                   return (
-                    <li key={task.key}>
+                    <li key={task.key} className={`task-status-${alreadyTaken ? 'done' : 'new'}`}>
                       <div>
                         <strong>{task.name}</strong>
                         <div className="bonus-meta-line">
@@ -3245,288 +3666,86 @@ function App() {
                   )
                 })}
           </ul>
-          <div className="task-targets compact-targets bonus-log">
-            <p className="mini">Registrerte ekstraoppgaver i perioden (alle barn, nyeste nederst):</p>
-            <ul className="log-list">
-              {sharedBonusEntriesThisPeriod.length === 0 && <li>Ingen registreringer ennå.</li>}
-              {sharedBonusEntriesThisPeriod.map((entry) => (
-                <li key={entry.id}>
-                  <strong>{entry.taskName}</strong>
-                  <p className="mini">{entry.childName} tok oppgaven og fikk {entry.points} poeng.</p>
-                  <p className="mini">{new Date(entry.timestamp).toLocaleTimeString('nb-NO')}</p>
-                </li>
-              ))}
-            </ul>
-          </div>
-
-          {canManageTaskSetup && (
-            <div className="task-targets compact-targets">
-              <p className="mini">Oppgaven gjelder for:</p>
-              <label className="target-pill">
-                <input
-                  type="checkbox"
-                  checked={taskTargetChildIds.length === state.profiles.length}
-                  onChange={(event) =>
-                    event.target.checked ? selectAllTargetChildren() : clearTargetChildren()
-                  }
-                />
-                Alle barn
-              </label>
-              <div className="task-target-list">
-                {state.profiles.map((profile) => (
-                  <label key={profile.id} className="target-pill">
-                    <input
-                      type="checkbox"
-                      checked={taskTargetChildIds.includes(profile.id)}
-                      onChange={(event) =>
-                        updateSelectedChildrenForTasks(profile.id, event.target.checked)
-                      }
-                    />
-                    {profile.childName}
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {canManageTaskSetup && (
-            <form className="inline-form bonus-form" onSubmit={addBonusTask}>
-              <input
-                placeholder="Ny ekstraoppgave"
-                value={newBonusName}
-                onChange={(event) => setNewBonusName(event.target.value)}
-              />
-              <label className="mini">
-                Poeng
-                <input
-                  type="number"
-                  min={1}
-                  value={newBonusPoints}
-                  onChange={(event) =>
-                    setNewBonusPoints(Math.max(1, safeNumber(event.target.value, 1)))
-                  }
-                />
-              </label>
-              <label className="mini up-for-grabs-toggle">
-                <input
-                  type="checkbox"
-                  checked={newBonusUpForGrabs}
-                  onChange={(event) => setNewBonusUpForGrabs(event.target.checked)}
-                />
-                Up for grabs
-              </label>
-              <button type="submit">Legg til</button>
-            </form>
-          )}
-
+        </div>
           {state.parentSettings.penaltyEnabled && (
-            <>
-              <h2>Trekk-oppgaver</h2>
+            <section className="card penalty-section chart-span-2">
+              <h2>Poengtrekk</h2>
+              <h3>Hva kan gi poengtrekk?</h3>
               <ul className="task-list">
-                {activeProfile.penaltyTasks.map((task) => (
+                {activeProfile.penaltyTasks.map((task) => {
+                    const applicableProfiles = state.profiles.filter((profile) =>
+                      profile.penaltyTasks.some((profileTask) => profileTask.id === task.id),
+                    )
+                    const selectedChildId = penaltyTargetChildIdByTask[task.id] ?? applicableProfiles[0]?.id ?? ''
+                    return (
                   <li key={task.id}>
-                    <div>
-                      {canManageTaskSetup ? (
-                        <input
-                          value={task.name}
-                          disabled={!canManageTaskSetup}
-                          onChange={(event) => updatePenaltyTask(task.id, { name: event.target.value })}
-                        />
-                      ) : (
+                    <div className="penalty-task-content">
+                      <div className="penalty-task-line">
                         <strong>{task.name}</strong>
-                      )}
-                      <label className="mini">
-                        Trekkpoeng
-                        <input
-                          type="number"
-                          min={1}
-                          disabled={!canManageTaskSetup}
-                          value={task.points}
-                          onChange={(event) =>
-                            updatePenaltyTask(task.id, {
-                              points: Math.max(1, Math.floor(safeNumber(event.target.value, task.points))),
-                            })
-                          }
-                        />
-                      </label>
-                      {canManageTaskSetup && (
-                        <p className="mini task-applies-to">
-                          Gjelder for: {getChildrenForTask('penalty', task.name, task.points).join(', ') || 'Ingen'}
-                        </p>
-                      )}
+                        <span className="mini">Kan gi {task.points} poeng i trekk</span>
+                        {canManage && !isChildMode && (
+                        <label className="mini penalty-target-select">
+                          <span>Gjelder for</span>
+                          <select
+                            value={selectedChildId}
+                            onChange={(event) => setPenaltyTargetChildIdByTask((previous) => ({
+                              ...previous,
+                              [task.id]: event.target.value,
+                            }))}
+                          >
+                            {applicableProfiles.map((profile) => (
+                              <option key={profile.id} value={profile.id}>{profile.childName}</option>
+                            ))}
+                          </select>
+                        </label>
+                        )}
+                        {canManage && !isChildMode && (
+                          <button type="button" onClick={() => registerPenalty(task.id, selectedChildId)} disabled={!selectedChildId}>
+                            Utfør trekk
+                          </button>
+                        )}
+                      </div>
                     </div>
-                    <div className="row-actions">
-                      {canRegisterTasksInCurrentView && (
-                        <button type="button" onClick={() => addEntry('penalty', task.id)}>
-                          Registrer trekk
-                        </button>
-                      )}
-                      {canManageTaskSetup && (
-                        <button
-                          type="button"
-                          className="danger"
-                          disabled={!canManageTaskSetup}
-                          onClick={() => removePenaltyTask(task.id)}
-                        >
-                          Slett
-                        </button>
-                      )}
-                    </div>
+                    {canManage && !isChildMode && (
+                      <div className="registered-dates">
+                        {currentPeriodEntries
+                          .filter((entry) => entry.taskType === 'penalty' && entry.taskId === task.id)
+                          .map((entry) => (
+                            <div key={entry.id} className="registered-date">
+                              <span>
+                                Trekk registrert {new Date(entry.timestamp).toLocaleDateString('nb-NO', {
+                                  weekday: 'short',
+                                  day: '2-digit',
+                                  month: '2-digit',
+                                })}
+                              </span>
+                              <button
+                                type="button"
+                                className="remove-date"
+                                onClick={() => removeEntry(entry.id)}
+                              >
+                                Angre
+                              </button>
+                            </div>
+                          ))}
+                      </div>
+                    )}
                   </li>
-                ))}
+                    )
+                })}
               </ul>
 
-              {canManageTaskSetup && (
-                <div className="task-targets compact-targets">
-                  <p className="mini">Oppgaven gjelder for:</p>
-                  <label className="target-pill">
-                    <input
-                      type="checkbox"
-                      checked={taskTargetChildIds.length === state.profiles.length}
-                      onChange={(event) =>
-                        event.target.checked ? selectAllTargetChildren() : clearTargetChildren()
-                      }
-                    />
-                    Alle barn
-                  </label>
-                  <div className="task-target-list">
-                    {state.profiles.map((profile) => (
-                      <label key={profile.id} className="target-pill">
-                        <input
-                          type="checkbox"
-                          checked={taskTargetChildIds.includes(profile.id)}
-                          onChange={(event) =>
-                            updateSelectedChildrenForTasks(profile.id, event.target.checked)
-                          }
-                        />
-                        {profile.childName}
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {canManageTaskSetup && (
-                <form className="inline-form" onSubmit={addPenaltyTask}>
-                  <input
-                    placeholder="Ny trekk-oppgave"
-                    value={newPenaltyName}
-                    onChange={(event) => setNewPenaltyName(event.target.value)}
-                  />
-                  <input
-                    type="number"
-                    min={1}
-                    value={newPenaltyPoints}
-                    onChange={(event) =>
-                      setNewPenaltyPoints(Math.max(1, safeNumber(event.target.value, 1)))
-                    }
-                  />
-                  <button type="submit">Legg til trekk</button>
-                </form>
-              )}
-            </>
+              {activeProfile.penaltyTasks.length === 0 && <p className="mini">Ingen regler for poengtrekk ennå.</p>}
+            </section>
           )}
-        </div>
       </section>}
 
-      {(activeTab === 'tasks' || activeTab === 'logs') && (
-      <section className={`grid-two ${activeTab === 'logs' ? 'single-col' : ''}`}>
-        {activeTab === 'tasks' && canManageTaskSetup && <div className="card">
-          <h2>Nivåer for ekstra lønn</h2>
-          <ul className="task-list">
-            {sortedLevels.map((level) => (
-              <li key={level.id}>
-                <div>
-                  {canManageTaskSetup ? (
-                    <input
-                      value={level.name}
-                      disabled={!canManageTaskSetup}
-                      onChange={(event) => updateLevel(level.id, { name: event.target.value })}
-                    />
-                  ) : (
-                    <strong>{level.name}</strong>
-                  )}
-                  <label className="mini">
-                    Min. poeng
-                    <input
-                      type="number"
-                      min={1}
-                      disabled={!canManageTaskSetup}
-                      value={level.minPoints}
-                      onChange={(event) =>
-                        updateLevel(level.id, {
-                          minPoints: Math.max(
-                            1,
-                            Math.floor(safeNumber(event.target.value, level.minPoints)),
-                          ),
-                        })
-                      }
-                    />
-                  </label>
-                  <label className="mini">
-                    Ekstra kr
-                    <input
-                      type="number"
-                      min={0}
-                      disabled={!canManageTaskSetup}
-                      value={level.extraAmount}
-                      onChange={(event) =>
-                        updateLevel(level.id, {
-                          extraAmount: Math.max(
-                            0,
-                            Math.floor(safeNumber(event.target.value, level.extraAmount)),
-                          ),
-                        })
-                      }
-                    />
-                  </label>
-                </div>
-                {canManageTaskSetup && (
-                  <button
-                    type="button"
-                    className="danger"
-                    disabled={!canManageTaskSetup}
-                    onClick={() => removeLevel(level.id)}
-                  >
-                    Slett
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-
-          {canManageTaskSetup && (
-            <form className="inline-form level-form" onSubmit={addRewardLevel}>
-              <input
-                placeholder="Nivånavn"
-                value={newLevelName}
-                onChange={(event) => setNewLevelName(event.target.value)}
-              />
-              <label className="mini">
-                Min. poeng
-                <input
-                  type="number"
-                  min={1}
-                  value={newLevelPoints}
-                  onChange={(event) => setNewLevelPoints(Math.max(1, safeNumber(event.target.value, 1)))}
-                />
-              </label>
-              <label className="mini">
-                Ekstra kr
-                <input
-                  type="number"
-                  min={0}
-                  value={newLevelAmount}
-                  onChange={(event) => setNewLevelAmount(Math.max(0, safeNumber(event.target.value, 0)))}
-                />
-              </label>
-              <button type="submit">Legg til nivå</button>
-            </form>
-          )}
-        </div>}
-
-        {activeTab === 'logs' && <div className="card">
-          <h2>Registreringer ({currentPeriodLabel})</h2>
+      {((activeTab === 'tasks' && isChildMode) || (activeTab === 'logs' && !isChildMode)) && (
+      <section className="card">
+        <details key={isChildMode ? 'child-registrations' : 'parent-registrations'} open={isChildMode ? undefined : true}>
+          <summary className="registrations-summary">
+            {isChildMode ? 'Mine registreringer' : `Registreringer (${currentPeriodLabel})`}
+          </summary>
           <ul className="log-list">
             {currentPeriodEntries.length === 0 && <li>Ingen registreringer ennå i denne perioden.</li>}
             {currentPeriodEntries.map((entry) => {
@@ -3540,7 +3759,7 @@ function App() {
               return (
                 <li key={entry.id}>
                   <div>
-                    <strong>{taskName ?? 'Ukjent oppgave'}</strong>
+                    <strong>{entry.taskName ?? taskName ?? 'Ukjent oppgave'}</strong>
                     <p className="mini">
                       {entry.taskType === 'mandatory'
                         ? 'Obligatorisk'
@@ -3551,7 +3770,7 @@ function App() {
                       {new Date(entry.timestamp).toLocaleString('nb-NO')}
                     </p>
                   </div>
-                  {canManage && (
+                  {(!isChildMode && canManage || canRegisterTasks && entry.taskType !== 'penalty') && (
                     <button
                       type="button"
                       className="danger"
@@ -3564,7 +3783,7 @@ function App() {
               )
             })}
           </ul>
-        </div>}
+        </details>
       </section>
       )}
 
@@ -3572,21 +3791,24 @@ function App() {
         <Suspense fallback={<section className="card">Laster historikk...</section>}>
           <ParentDashboard
             view="history"
-            mandatoryCompletionPct={mandatoryCompletionPct}
-            mandatoryDoneTotal={mandatoryDoneTotal}
-            mandatoryRequiredTotal={mandatoryRequiredTotal}
-            pointsAvailableNow={pointsAvailableNow}
-            netPointsThisPeriod={netPointsThisPeriod}
-            reachedLevelName={reachedLevelNow?.name ?? 'Ingen nivå'}
-            projectedExtra={projectedExtra}
-            projectedTotalAllowance={projectedTotalAllowance}
-            payoutChartData={payoutChartData}
-            levelProgressData={levelProgressData}
-            mandatoryProgressData={mandatoryProgressData}
-            bonusContributionData={bonusContributionData}
-            penaltyContributionData={penaltyContributionData}
+            mandatoryCompletionPct={dashboardMandatoryCompletionPct}
+            mandatoryDoneTotal={dashboardMandatoryDoneTotal}
+            mandatoryRequiredTotal={dashboardMandatoryRequiredTotal}
+            pointsAvailableNow={dashboardPointsAvailable}
+            netPointsThisPeriod={dashboardNetPoints}
+            reachedLevelName={dashboardIsAll ? 'Flere nivåer' : (dashboardSelected?.reachedLevelName ?? 'Ingen nivå')}
+            projectedExtra={dashboardProjectedExtra}
+            projectedTotalAllowance={dashboardProjectedTotalAllowance}
+            dashboardChildId={effectiveDashboardChildId}
+            profiles={state.profiles.map((profile) => ({ id: profile.id, childName: formatChildNameForDisplay(profile.childName) }))}
+            onDashboardChildChange={setDashboardChildId}
+            payoutChartData={dashboardPayoutChartData}
+            levelProgressData={dashboardLevelProgressData}
+            mandatoryProgressData={dashboardMandatoryProgressData}
+            bonusContributionData={dashboardBonusContributionData}
+            penaltyContributionData={dashboardPenaltyContributionData}
             penaltyEnabled={state.parentSettings.penaltyEnabled}
-            settlementHistoryData={settlementHistoryData}
+            settlementHistoryData={dashboardSettlementHistoryData}
             historyFilter={activeProfile.historyFilter}
             onHistoryFilterChange={updateHistoryFilterForActiveChild}
           />
@@ -3620,9 +3842,8 @@ function App() {
                 <div>
                   <strong>{settlement.periodLabel}</strong>
                   <p className="mini">
-                    {settlement.mandatoryMet
-                      ? `${activeProfile.childName} fikk grunnlønn`
-                      : `${activeProfile.childName} manglet obligatoriske oppgaver`}
+                    Fast lønn: {settlement.fixedPaid ?? 0} kr. Obligatorisk lønn: {settlement.basePaid} kr.
+                    Bonus: {settlement.extraPaid} kr.
                   </p>
                   <p className="mini">
                     Nivå: {settlement.reachedLevelName}, poeng brukt {settlement.pointsSpent},
@@ -3670,6 +3891,7 @@ function App() {
       )}
       </>
       )}
+      </fieldset>
     </main>
   )
 }

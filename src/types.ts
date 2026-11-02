@@ -49,6 +49,20 @@ export type Entry = {
   taskType: 'mandatory' | 'bonus' | 'penalty'
   taskId: string
   timestamp: string
+  periodType?: PeriodType
+  taskName?: string
+  points?: number
+}
+
+export type BankTransaction = {
+  id: string
+  type: 'salary' | 'deposit' | 'withdrawal' | 'interest' | 'opening' | 'points'
+  amount: number
+  timestamp: string
+  description: string
+  settlementId?: string
+  allocations?: { transactionId: string; amount: number }[]
+  pointsDelta?: number
 }
 
 export type Settlement = {
@@ -58,6 +72,7 @@ export type Settlement = {
   periodType: PeriodType
   mandatoryMet: boolean
   basePaid: number
+  fixedPaid?: number
   extraPaid: number
   totalPaid: number
   pointsEarned: number
@@ -75,6 +90,8 @@ export type ChildProfile = {
   childName: string
   periodType: PeriodType
   baseAllowance: number
+  fixedAllowance?: number
+  allowanceStartAt?: string
   childPinHash: string | null
   childPinSalt: string | null
   childPinIterations: number
@@ -88,6 +105,8 @@ export type ChildProfile = {
   settlements: Settlement[]
   carryPoints: number
   bankDeposits: number
+  transactions?: BankTransaction[]
+  interestCheckpoints?: Record<string, { anchor: string; periods: number }>
 }
 
 export type ParentSettings = {
@@ -109,6 +128,7 @@ export type AppState = {
   profiles: ChildProfile[]
   activeChildId: string
   parentSettings: ParentSettings
+  sharedBonusClaims?: { taskName: string; points: number; timestamp: string; childName: string }[]
 }
 
 export type DeferredInstallPromptEvent = Event & {

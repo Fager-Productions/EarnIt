@@ -9,12 +9,12 @@ import type {
   Settlement,
 } from '../types'
 import {
-  getInitialInterestAnchor,
   getPeriodKey,
   getPeriodLabel,
   getPeriodStartDate,
 } from './period'
 import type { InterestPeriod } from './coreLogic'
+import { initializeBank } from './bank'
 
 export type PeriodOutcomeInput = {
   entries: Entry[]
@@ -25,6 +25,7 @@ export type PeriodOutcomeInput = {
   penaltyTasks: PenaltyTask[]
   rewardLevels: RewardLevel[]
   baseAllowance: number
+  fixedAllowance?: number
   carryIn: number
   penaltyEnabled: boolean
   bonusRequiresMandatory?: boolean
@@ -38,6 +39,7 @@ export type PeriodOutcome = {
   carryOut: number
   reachedLevelName: string
   basePaid: number
+  fixedPaid: number
   extraPaid: number
   totalPaid: number
 }
@@ -46,7 +48,8 @@ export type PeriodOutcome = {
 // so both always agree on how mandatory/bonus/penalty/levels translate into a payout.
 export function computePeriodOutcome(input: PeriodOutcomeInput): PeriodOutcome {
   const periodEntries = input.entries.filter(
-    (entry) => getPeriodKey(new Date(entry.timestamp), input.periodType) === input.periodKey,
+    (entry) => (!entry.periodType || entry.periodType === input.periodType) &&
+      getPeriodKey(new Date(entry.timestamp), input.periodType) === input.periodKey,
   )
 
   const mandatoryCountMap: Record<string, number> = {}
@@ -64,7 +67,7 @@ export function computePeriodOutcome(input: PeriodOutcomeInput): PeriodOutcome {
     .filter((entry) => entry.taskType === 'bonus')
     .reduce((sum, entry) => {
       const task = input.bonusTasks.find((item) => item.id === entry.taskId)
-      return sum + (task?.points ?? 0)
+      return sum + (entry.points ?? task?.points ?? 0)
     }, 0)
 
   const penaltyPoints = input.penaltyEnabled
@@ -72,7 +75,7 @@ export function computePeriodOutcome(input: PeriodOutcomeInput): PeriodOutcome {
         .filter((entry) => entry.taskType === 'penalty')
         .reduce((sum, entry) => {
           const task = input.penaltyTasks.find((item) => item.id === entry.taskId)
-          return sum + (task?.points ?? 0)
+          return sum + (entry.points ?? task?.points ?? 0)
         }, 0)
     : 0
 
@@ -86,7 +89,8 @@ export function computePeriodOutcome(input: PeriodOutcomeInput): PeriodOutcome {
   const extraPaid = bonusCanApply ? (reachedLevel?.extraAmount ?? 0) : 0
   const pointsSpent = bonusCanApply ? (reachedLevel?.minPoints ?? 0) : 0
   const carryOut = bonusCanApply ? Math.max(0, pointsAvailable - pointsSpent) : pointsAvailable
-  const basePaid = mandatoryMet ? input.baseAllowance : 0
+  const basePaid = mandatoryMet && input.mandatoryTasks.length > 0 ? input.baseAllowance : 0
+  const fixedPaid = input.fixedAllowance ?? 0
 
   return {
     mandatoryMet,
@@ -96,14 +100,15 @@ export function computePeriodOutcome(input: PeriodOutcomeInput): PeriodOutcome {
     carryOut,
     reachedLevelName: reachedLevel?.name ?? 'Ingen nivå',
     basePaid,
+    fixedPaid,
     extraPaid,
-    totalPaid: basePaid + extraPaid,
+    totalPaid: fixedPaid + basePaid + extraPaid,
   }
 }
 
 export function settlePastPeriods(
   profile: ChildProfile,
-  interestPeriod: InterestPeriod,
+  _interestPeriod: InterestPeriod,
   penaltyEnabled: boolean,
   bonusRequiresMandatory: boolean,
   now = new Date(),
@@ -114,12 +119,24 @@ export function settlePastPeriods(
       .filter((settlement) => settlement.periodType === profile.periodType)
       .map((settlement) => settlement.periodKey),
   )
+  const pendingKeys = new Set(
+    profile.entries
+      .filter(entry => !entry.periodType || entry.periodType === profile.periodType)
+      .map((entry) => getPeriodKey(new Date(entry.timestamp), profile.periodType))
+      .filter((periodKey) => getPeriodStartDate(periodKey, profile.periodType) < getPeriodStartDate(currentPeriodKey, profile.periodType) && !settledKeys.has(periodKey)),
+  )
+  if (profile.allowanceStartAt) {
+    const cursor = getPeriodStartDate(getPeriodKey(new Date(profile.allowanceStartAt), profile.periodType), profile.periodType)
+    const currentStart = getPeriodStartDate(currentPeriodKey, profile.periodType)
+    while (cursor < currentStart) {
+      const key = getPeriodKey(cursor, profile.periodType)
+      if (!settledKeys.has(key)) pendingKeys.add(key)
+      if (profile.periodType === 'week') cursor.setDate(cursor.getDate() + 7)
+      else cursor.setMonth(cursor.getMonth() + 1)
+    }
+  }
   const pendingPeriodKeys = Array.from(
-    new Set(
-      profile.entries
-        .map((entry) => getPeriodKey(new Date(entry.timestamp), profile.periodType))
-        .filter((periodKey) => periodKey !== currentPeriodKey && !settledKeys.has(periodKey)),
-    ),
+    pendingKeys,
   ).sort(
     (a, b) =>
       getPeriodStartDate(a, profile.periodType).getTime() -
@@ -130,7 +147,8 @@ export function settlePastPeriods(
     return profile
   }
 
-  let carryIn = profile.settlements[0]?.carryOut ?? profile.carryPoints
+  const initialized = initializeBank(profile)
+  let carryIn = profile.carryPoints
   const autoSettlements: Settlement[] = pendingPeriodKeys.map((periodKey) => {
     const outcome = computePeriodOutcome({
       entries: profile.entries,
@@ -141,12 +159,16 @@ export function settlePastPeriods(
       penaltyTasks: profile.penaltyTasks,
       rewardLevels: profile.rewardLevels,
       baseAllowance: profile.baseAllowance,
+      fixedAllowance: profile.fixedAllowance,
       carryIn,
       penaltyEnabled,
       bonusRequiresMandatory,
     })
 
     carryIn = outcome.carryOut
+    const end = getPeriodStartDate(periodKey, profile.periodType)
+    if (profile.periodType === 'week') end.setDate(end.getDate() + 7)
+    else end.setMonth(end.getMonth() + 1)
     return {
       id: crypto.randomUUID(),
       periodKey,
@@ -154,6 +176,7 @@ export function settlePastPeriods(
       periodType: profile.periodType,
       mandatoryMet: outcome.mandatoryMet,
       basePaid: outcome.basePaid,
+      fixedPaid: outcome.fixedPaid,
       extraPaid: outcome.extraPaid,
       totalPaid: outcome.totalPaid,
       pointsEarned: outcome.netPoints,
@@ -161,15 +184,26 @@ export function settlePastPeriods(
       pointsSpent: outcome.pointsSpent,
       carryOut: outcome.carryOut,
       reachedLevelName: outcome.reachedLevelName,
-      createdAt: getInitialInterestAnchor(interestPeriod),
+      createdAt: end.toISOString(),
       withdrawnAmount: 0,
       paidAt: null,
     }
   })
 
   return {
-    ...profile,
+    ...initialized,
     carryPoints: carryIn,
     settlements: [...autoSettlements.reverse(), ...profile.settlements],
+    transactions: [
+      ...(initialized.transactions ?? []),
+      ...[...autoSettlements].reverse().filter(item => item.totalPaid > 0).map(item => ({
+        id: `salary-${item.id}`,
+        type: 'salary' as const,
+        amount: item.totalPaid,
+        timestamp: item.createdAt,
+        description: `${item.periodLabel}: fast ${item.fixedPaid ?? 0} kr, obligatorisk ${item.basePaid} kr, bonus ${item.extraPaid} kr`,
+        settlementId: item.id,
+      })),
+    ],
   }
 }

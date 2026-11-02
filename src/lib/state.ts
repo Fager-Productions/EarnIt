@@ -1,5 +1,6 @@
 import type { AppState, BonusTask, ChildProfile, Entry, HistoryFilter, MandatoryTask, ParentSettings, PenaltyTask, PeriodType, RewardLevel, Settlement } from '../types'
 import { AUTH_ITERATIONS } from './auth'
+import { bankSummary, initializeBank } from './bank'
 
 export const STORAGE_KEY = 'ukelonn-app-state-v2'
 export const DEFAULT_CHILD_NAME = 'Barnets navn'
@@ -9,6 +10,7 @@ export const EMPTY_CHILD_PROFILE: ChildProfile = {
   childName: 'Ingen barn',
   periodType: 'week',
   baseAllowance: 0,
+  fixedAllowance: 0,
   childPinHash: null,
   childPinSalt: null,
   childPinIterations: AUTH_ITERATIONS,
@@ -22,6 +24,8 @@ export const EMPTY_CHILD_PROFILE: ChildProfile = {
   settlements: [],
   carryPoints: 0,
   bankDeposits: 0,
+  transactions: [],
+  interestCheckpoints: {},
 }
 
 export function createDefaultProfile(name = DEFAULT_CHILD_NAME): ChildProfile {
@@ -30,6 +34,8 @@ export function createDefaultProfile(name = DEFAULT_CHILD_NAME): ChildProfile {
     childName: name,
     periodType: 'week',
     baseAllowance: 0,
+    fixedAllowance: 0,
+    allowanceStartAt: new Date().toISOString(),
     childPinHash: null,
     childPinSalt: null,
     childPinIterations: AUTH_ITERATIONS,
@@ -43,6 +49,8 @@ export function createDefaultProfile(name = DEFAULT_CHILD_NAME): ChildProfile {
     settlements: [],
     carryPoints: 0,
     bankDeposits: 0,
+    transactions: [],
+    interestCheckpoints: {},
   }
 }
 
@@ -122,26 +130,42 @@ export function normalizeLoadedState(raw: unknown): AppState {
   }
 
   if (Array.isArray(candidate.profiles)) {
-    const mappedProfiles = candidate.profiles.map((profile) => ({
+    const mappedProfiles = candidate.profiles.map((profile) => initializeBank({
       ...createDefaultProfile(profile.childName || 'Barn'),
       ...profile,
+      fixedAllowance: Math.max(0, safeNumber(String(profile.fixedAllowance ?? 0))),
+      baseAllowance: Math.max(0, safeNumber(String(profile.baseAllowance ?? 0))),
+      carryPoints: Math.max(0, safeNumber(String(profile.carryPoints ?? 0))),
+      allowanceStartAt: profile.allowanceStartAt ?? profile.entries?.map(entry => entry.timestamp).sort()[0] ?? new Date().toISOString(),
+      transactions: profile.transactions,
       childPinHash: profile.childPinHash ?? candidate.parentSettings?.childPinHash ?? null,
       childPinSalt: profile.childPinSalt ?? candidate.parentSettings?.childPinSalt ?? null,
       childPinIterations:
         profile.childPinIterations ?? candidate.parentSettings?.childPinIterations ?? AUTH_ITERATIONS,
       childPinPlain: profile.childPinPlain ?? null,
-      mandatoryTasks: profile.mandatoryTasks ?? [],
+      mandatoryTasks: (profile.mandatoryTasks ?? []).map((task) => ({
+        ...task,
+        requiredCount: Math.max(1, Math.floor(safeNumber(String(task.requiredCount), 1))),
+      })),
       bonusTasks: (profile.bonusTasks ?? []).map((task) => ({
         ...task,
+        points: Math.max(1, Math.floor(safeNumber(String(task.points), 1))),
         upForGrabs: task.upForGrabs ?? false,
       })),
-      penaltyTasks: profile.penaltyTasks ?? [],
-      rewardLevels: profile.rewardLevels ?? [],
+      penaltyTasks: (profile.penaltyTasks ?? []).map((task) => ({
+        ...task,
+        points: Math.max(1, Math.floor(safeNumber(String(task.points), 1))),
+      })),
+      rewardLevels: (profile.rewardLevels ?? []).map((level) => ({
+        ...level,
+        minPoints: Math.max(1, Math.floor(safeNumber(String(level.minPoints), 1))),
+        extraAmount: Math.max(0, Math.floor(safeNumber(String(level.extraAmount), 0))),
+      })),
       historyFilter: profile.historyFilter ?? 'all',
-      entries: profile.entries ?? [],
+      entries: (profile.entries ?? []).map(entry => ({ ...entry, periodType: entry.periodType ?? profile.periodType })),
       settlements: (profile.settlements ?? []).map((settlement) => ({
         ...settlement,
-        withdrawnAmount: Math.max(0, settlement.withdrawnAmount ?? 0),
+        withdrawnAmount: Math.max(0, settlement.withdrawnAmount ?? (settlement.paidAt ? settlement.totalPaid : 0)),
         paidAt: settlement.paidAt ?? null,
       })),
       bankDeposits: Math.max(0, profile.bankDeposits ?? 0),
@@ -192,17 +216,19 @@ export function normalizeLoadedState(raw: unknown): AppState {
     migrated.penaltyTasks = candidate.penaltyTasks ?? migrated.penaltyTasks
     migrated.rewardLevels = candidate.rewardLevels ?? migrated.rewardLevels
     migrated.historyFilter = candidate.historyFilter ?? 'all'
-    migrated.entries = candidate.entries ?? []
+    migrated.entries = (candidate.entries ?? []).map(entry => ({ ...entry, periodType: entry.periodType ?? migrated.periodType }))
     migrated.settlements = (candidate.settlements ?? []).map((settlement) => ({
       ...settlement,
-      withdrawnAmount: Math.max(0, settlement.withdrawnAmount ?? 0),
+      withdrawnAmount: Math.max(0, settlement.withdrawnAmount ?? (settlement.paidAt ? settlement.totalPaid : 0)),
       paidAt: settlement.paidAt ?? null,
     }))
     migrated.carryPoints = candidate.carryPoints ?? 0
     migrated.bankDeposits = Math.max(0, (candidate as { bankDeposits?: number }).bankDeposits ?? 0)
+    migrated.transactions = undefined
+    migrated.allowanceStartAt = migrated.entries.map(entry => entry.timestamp).sort()[0] ?? new Date().toISOString()
 
     return {
-      profiles: [migrated],
+      profiles: [initializeBank(migrated)],
       activeChildId: migrated.id,
       parentSettings: {
         passwordHash: null,
@@ -222,6 +248,74 @@ export function normalizeLoadedState(raw: unknown): AppState {
   }
 
   return initialState
+}
+
+export function parseBackupState(raw: unknown): AppState {
+  const object = (value: unknown): value is Record<string, unknown> =>
+    Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+  if (!object(raw) || (!Array.isArray(raw.profiles) && typeof raw.childName !== 'string')) {
+    throw new Error('Filen er ikke en Ukelønn-sikkerhetskopi.')
+  }
+  const profiles = Array.isArray(raw.profiles) ? raw.profiles : [raw]
+  const profileIds = new Set<string>()
+  for (const profile of profiles) {
+    if (!object(profile) || typeof profile.childName !== 'string' ||
+      !['week', 'month'].includes(String(profile.periodType))) {
+      throw new Error('Sikkerhetskopien har en ugyldig barneprofil.')
+    }
+    if (Array.isArray(raw.profiles)) {
+      if (typeof profile.id !== 'string' || profileIds.has(profile.id)) throw new Error('Ugyldige eller dupliserte profil-ID-er.')
+      profileIds.add(profile.id)
+    }
+    for (const key of ['baseAllowance', 'fixedAllowance', 'bankDeposits', 'carryPoints']) {
+      const value = profile[key]
+      if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+        throw new Error(`Ugyldig verdi for ${key}.`)
+      }
+    }
+    for (const key of ['mandatoryTasks', 'bonusTasks', 'penaltyTasks', 'rewardLevels', 'entries', 'settlements', 'transactions']) {
+      const items = profile[key]
+      if (items === undefined && ['penaltyTasks', 'transactions'].includes(key)) continue
+      if (!Array.isArray(items)) throw new Error(`Sikkerhetskopien har ugyldig ${key}.`)
+      const ids = new Set<string>()
+      for (const item of items) {
+        if (!object(item) || typeof item.id !== 'string' || ids.has(item.id)) throw new Error(`Ugyldig ID i ${key}.`)
+        ids.add(item.id)
+        for (const numberKey of ['amount', 'points', 'requiredCount', 'minPoints', 'extraAmount', 'totalPaid', 'withdrawnAmount']) {
+          if (item[numberKey] !== undefined && (typeof item[numberKey] !== 'number' || !Number.isFinite(item[numberKey]))) {
+            throw new Error(`Ugyldig beløp eller poeng i ${key}.`)
+          }
+        }
+        if (['entries', 'transactions'].includes(key) &&
+          (typeof item.timestamp !== 'string' || !Number.isFinite(new Date(item.timestamp).getTime()))) {
+          throw new Error(`Ugyldig dato i ${key}.`)
+        }
+        if (key === 'transactions' && !['salary', 'deposit', 'withdrawal', 'interest', 'opening', 'points'].includes(String(item.type))) {
+          throw new Error('Ugyldig transaksjonstype.')
+        }
+        if (key === 'transactions') {
+          if (typeof item.amount !== 'number' ||
+            (item.type === 'withdrawal' ? item.amount >= 0 : item.type === 'points' ? item.amount !== 0 : item.amount <= 0)) {
+            throw new Error('Ugyldig transaksjonsbeløp.')
+          }
+          if (item.type === 'withdrawal') {
+            if (!Array.isArray(item.allocations) || item.allocations.some(allocation =>
+              !object(allocation) || typeof allocation.transactionId !== 'string' ||
+              typeof allocation.amount !== 'number' || !Number.isFinite(allocation.amount) || allocation.amount <= 0)) {
+              throw new Error('Uttaket mangler gyldig fordeling mot innskudd.')
+            }
+            const allocated = item.allocations.reduce((sum: number, allocation: { amount: number }) => sum + allocation.amount, 0)
+            if (Math.abs(allocated + item.amount) > 0.005) throw new Error('Uttaksbeløpet stemmer ikke med fordelingen.')
+          }
+        }
+      }
+    }
+  }
+  const normalized = normalizeLoadedState(raw)
+  for (const profile of normalized.profiles) {
+    if (bankSummary(profile).balance < 0) throw new Error('Sikkerhetskopien har negativ banksaldo.')
+  }
+  return normalized
 }
 
 export function loadState(): AppState {

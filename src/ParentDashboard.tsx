@@ -23,7 +23,10 @@ type ParentDashboardProps = {
   reachedLevelName: string
   projectedExtra: number
   projectedTotalAllowance: number
-  payoutChartData: Array<{ name: string; amount: number }>
+  dashboardChildId: string
+  profiles: Array<{ id: string; childName: string }>
+  onDashboardChildChange: (childId: string) => void
+  payoutChartData: Array<{ name: string; amount?: number; fastlønn?: number; grunnlønn?: number; bonus?: number; total?: number }>
   levelProgressData: Array<{ name: string; na: number; mal: number }>
   mandatoryProgressData: Array<{ name: string; gjort: number; krav: number }>
   bonusContributionData: Array<{ name: string; poeng: number }>
@@ -46,9 +49,26 @@ function ParentDashboard(props: ParentDashboardProps) {
     }
     return props.settlementHistoryData.filter((item) => item.periodType === props.historyFilter)
   }, [props.historyFilter, props.settlementHistoryData])
+  const hasPayoutData = props.payoutChartData.some((item) =>
+    Math.max(item.amount ?? 0, item.fastlønn ?? 0, item.grunnlønn ?? 0, item.bonus ?? 0, item.total ?? 0) > 0,
+  )
 
   return (
     <>
+      <section className="card dashboard-filter-card">
+        <label className="dashboard-filter">
+          Vis dashboard for
+          <select
+            value={props.dashboardChildId}
+            onChange={(event) => props.onDashboardChildChange(event.target.value)}
+          >
+            <option value="all">Alle barn</option>
+            {props.profiles.map((profile) => (
+              <option key={profile.id} value={profile.id}>{profile.childName}</option>
+            ))}
+          </select>
+        </label>
+      </section>
       {props.view === 'overview' && <section className="kpi-grid premium-kpis">
         <article>
           <p>Obligatorisk progresjon</p>
@@ -81,21 +101,34 @@ function ParentDashboard(props: ParentDashboardProps) {
       {props.view === 'overview' && <section className="dashboard-grid">
         <article className="card chart-card chart-span-2 chart-hero">
           <h2>Utbetalingsprognose</h2>
-          <p className="mini">Sammenligner grunnlønn, bonus og total for aktiv periode.</p>
-          <div className="chart-wrap">
-            <ResponsiveContainer width="100%" height={250}>
-              <BarChart data={props.payoutChartData}>
-                <CartesianGrid strokeDasharray="4 4" vertical={false} />
-                <XAxis dataKey="name" />
-                <YAxis />
-                <Tooltip />
-                <Bar dataKey="amount" fill="#e67e22" radius={[8, 8, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+          <p className="mini">Sammenligner fast lønn, obligatorisk lønn, bonus og total for aktiv periode.</p>
+          {hasPayoutData ? (
+            <div className="chart-wrap">
+              <ResponsiveContainer width="100%" height={250}>
+                <BarChart data={props.payoutChartData}>
+                  <CartesianGrid strokeDasharray="4 4" vertical={false} />
+                  <XAxis dataKey="name" />
+                  <YAxis />
+                  <Tooltip />
+                  {props.payoutChartData[0]?.amount !== undefined ? (
+                    <Bar dataKey="amount" fill="#e67e22" radius={[8, 8, 0, 0]} />
+                  ) : (
+                    <>
+                      <Bar dataKey="fastlønn" fill="#5f6caf" name="Fast lønn" radius={[8, 8, 0, 0]} />
+                      <Bar dataKey="grunnlønn" fill="#2a9d8f" name="Obligatorisk lønn" radius={[8, 8, 0, 0]} />
+                      <Bar dataKey="bonus" fill="#f4a261" name="Bonus" radius={[8, 8, 0, 0]} />
+                      <Bar dataKey="total" fill="#264653" name="Total" radius={[8, 8, 0, 0]} />
+                    </>
+                  )}
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <p className="chart-empty-state">Ingen opptjening registrert i perioden ennå.</p>
+          )}
         </article>
 
-        <article className="card chart-card">
+        <article className="card chart-card chart-secondary">
           <h2>Poengfremdrift</h2>
           <p className="mini">Fremdriften vises direkte i stolpediagrammet.</p>
           <div className="chart-wrap">
@@ -113,7 +146,7 @@ function ParentDashboard(props: ParentDashboardProps) {
           </div>
         </article>
 
-        <article className="card chart-card">
+        <article className="card chart-card chart-secondary">
           <h2>Obligatoriske oppgaver</h2>
           <p className="mini">Viser hva som er gjort opp mot krav per oppgave.</p>
           <div className="chart-wrap">
@@ -131,7 +164,7 @@ function ParentDashboard(props: ParentDashboardProps) {
           </div>
         </article>
 
-        <article className="card chart-card">
+        <article className="card chart-card chart-secondary">
           <h2>Poeng fra ekstraoppgaver</h2>
           <p className="mini">Poengbidrag per ekstraoppgave i valgt periode.</p>
           <div className="chart-wrap">
@@ -148,7 +181,7 @@ function ParentDashboard(props: ParentDashboardProps) {
         </article>
 
         {props.penaltyEnabled && (
-          <article className="card chart-card">
+          <article className="card chart-card chart-secondary">
             <h2>Trekk i poeng</h2>
             <p className="mini">Trekker ned total poengsum i valgt periode.</p>
             <div className="chart-wrap">

@@ -3,8 +3,13 @@ import { getIsoWeekKey, getMonthKey, getPeriodKey } from './period'
 
 describe('period keys', () => {
   it('starts a new weekly period on Monday', () => {
-    expect(getPeriodKey(new Date('2026-09-13T12:00:00'), 'week')).toBe('2026-W36')
-    expect(getPeriodKey(new Date('2026-09-14T00:00:00'), 'week')).toBe('2026-W37')
+    expect(getPeriodKey(new Date('2026-09-13T12:00:00'), 'week')).toBe('2026-W37')
+    expect(getPeriodKey(new Date('2026-09-14T00:00:00'), 'week')).toBe('2026-W38')
+  })
+
+  it('counts weeks correctly across daylight-saving time', () => {
+    expect(getIsoWeekKey(new Date('2026-10-04T12:00:00'))).toBe('2026-W40')
+    expect(getIsoWeekKey(new Date('2026-10-05T00:00:00'))).toBe('2026-W41')
   })
 
   it('keeps bonus carry periods separate from the new month', () => {
