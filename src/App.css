@@ -1318,15 +1318,6 @@ h2 {
 		var(--panel);
 }
 
-.child-savings-kpis {
-	margin-bottom: 0;
-}
-
-.child-savings-kpis .child-savings-total {
-	border-color: #9bd8c9;
-	background: #e8f7f1;
-}
-
 .grid-two {
 	display: grid;
 	gap: 12px;
@@ -1383,10 +1374,18 @@ h2 {
 .registrations-summary {
 	cursor: pointer;
 	font-weight: 800;
+	padding: 8px 0;
+	line-height: 1.45;
 }
 
 details[open] > .registrations-summary {
 	margin-bottom: 12px;
+}
+
+.previous-registration-period {
+	margin-top: 12px;
+	padding-top: 8px;
+	border-top: 1px solid var(--line);
 }
 
 .mandatory-meta-line {

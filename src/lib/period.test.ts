@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { getIsoWeekKey, getMonthKey, getPeriodKey, isBonusTaskAvailableInPeriod } from './period'
+import {
+  getIsoWeekKey,
+  getMonthKey,
+  getPeriodKey,
+  getPeriodSummaryLabel,
+  isBonusTaskAvailableInPeriod,
+} from './period'
 
 describe('period keys', () => {
   it('starts a new weekly period on Monday', () => {
@@ -20,6 +26,10 @@ describe('period keys', () => {
   it('uses the ISO year for dates around New Year', () => {
     expect(getIsoWeekKey(new Date('2026-01-01T12:00:00'))).toBe('2026-W01')
     expect(getIsoWeekKey(new Date('2027-01-01T12:00:00'))).toBe('2026-W53')
+  })
+
+  it('labels past weekly periods with their week number and date range', () => {
+    expect(getPeriodSummaryLabel('2026-W44', 'week')).toBe('Uke 44 (2026) · 26.10.2026–01.11.2026')
   })
 
   it('expires one-period bonus tasks while preserving recurring and legacy tasks', () => {

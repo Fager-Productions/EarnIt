@@ -37,6 +37,8 @@ import {
   getMonthKey,
   getPeriodKey,
   getPeriodLabel,
+  getPeriodStartDate,
+  getPeriodSummaryLabel,
   isBonusTaskAvailableInPeriod,
   isEntryInCurrentPeriod,
 } from './lib/period'
@@ -177,6 +179,25 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
       ),
     [activeProfile.entries, activeProfile.periodType, currentPeriodKey],
   )
+  const previousRegistrationPeriods = useMemo(() => {
+    const currentPeriodStart = getPeriodStartDate(currentPeriodKey, activeProfile.periodType)
+    const periods = new Map<string, ChildProfile['entries']>()
+
+    activeProfile.entries.forEach((entry) => {
+      if (entry.periodType && entry.periodType !== activeProfile.periodType) return
+      const periodKey = getPeriodKey(new Date(entry.timestamp), activeProfile.periodType)
+      if (getPeriodStartDate(periodKey, activeProfile.periodType) >= currentPeriodStart) return
+      const entries = periods.get(periodKey) ?? []
+      entries.push(entry)
+      periods.set(periodKey, entries)
+    })
+
+    return Array.from(periods, ([periodKey, entries]) => ({ periodKey, entries })).sort(
+      (a, b) =>
+        getPeriodStartDate(b.periodKey, activeProfile.periodType).getTime() -
+        getPeriodStartDate(a.periodKey, activeProfile.periodType).getTime(),
+    )
+  }, [activeProfile.entries, activeProfile.periodType, currentPeriodKey])
 
   useEffect(() => {
     const refresh = () => setNow(new Date())
@@ -1739,6 +1760,41 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
       ...profile,
       entries: profile.entries.filter((entry) => entry.id !== entryId),
     }))
+  }
+
+  function renderRegistrationEntry(entry: ChildProfile['entries'][number], allowRemove: boolean) {
+    const taskName =
+      entry.taskType === 'mandatory'
+        ? activeProfile.mandatoryTasks.find((task) => task.id === entry.taskId)?.name
+        : entry.taskType === 'bonus'
+          ? activeProfile.bonusTasks.find((task) => task.id === entry.taskId)?.name
+          : activeProfile.penaltyTasks.find((task) => task.id === entry.taskId)?.name
+
+    return (
+      <li key={entry.id}>
+        <div>
+          <strong>{entry.taskName ?? taskName ?? 'Ukjent oppgave'}</strong>
+          <p className="mini">
+            {entry.taskType === 'mandatory'
+              ? 'Obligatorisk'
+              : entry.taskType === 'bonus'
+                ? 'Ekstra'
+                : 'Trekk'}{' '}
+            -{' '}
+            {new Date(entry.timestamp).toLocaleString('nb-NO')}
+          </p>
+        </div>
+        {allowRemove && ((!isChildMode && canManage) || canRegisterTasks && entry.taskType !== 'penalty') && (
+          <button
+            type="button"
+            className="danger"
+            onClick={() => removeEntry(entry.id)}
+          >
+            Fjern
+          </button>
+        )}
+      </li>
+    )
   }
 
   function addMandatoryTask(event: FormEvent) {
@@ -3373,7 +3429,7 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
       {activeTab === 'account' && isChildMode && <section className="card child-savings-card">
         <h2>Sparegrisen din</h2>
         <p className="mini">Pengene her kan vokse med renter når de blir stående.</p>
-        <p className="mini">
+        <p className="bank-rate-note">
           Aktiv rentesats: {state.parentSettings.interestRatePct}% per{' '}
           {state.parentSettings.interestPeriod === 'week'
             ? 'uke'
@@ -3381,29 +3437,33 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
               ? 'måned'
               : 'år'}.
         </p>
-        <div className="kpi-grid child-savings-kpis">
-          <article>
-            <p>Totalt tjent</p>
-            <strong>{totalEarnedAllowance} kr</strong>
-          </article>
-          <article>
-            <p>Totalt tatt ut</p>
-            <strong>{totalWithdrawnAllowance} kr</strong>
-            <span className="mini">Opptjente renter beholdes. Uttatte penger gir ikke nye renter.</span>
-          </article>
-          <article>
-            <p>Sparepenger</p>
-            <strong>{childSavingsBeforeInterest} kr</strong>
-          </article>
-          <article>
-            <p>Ekstra fra renter</p>
-            <strong>+{unpaidSettlementsInterest} kr</strong>
-          </article>
-          <article className="child-savings-total">
-            <p>Total saldo</p>
-            <strong>{unpaidSettlementsTotalWithInterest} kr</strong>
-          </article>
+        <div className="bank-balance-hero">
+          <span>Total saldo med renter</span>
+          <strong>{unpaidSettlementsTotalWithInterest.toLocaleString('nb-NO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kr</strong>
+          <span className="bank-balance-caption">Sparepenger og renter</span>
         </div>
+        <dl className="bank-stat-grid">
+          <div>
+            <dt>Totalt tjent</dt>
+            <dd>{totalEarnedAllowance.toLocaleString('nb-NO')} kr</dd>
+            <span>Fra avsluttede perioder</span>
+          </div>
+          <div>
+            <dt>Totalt tatt ut</dt>
+            <dd>{totalWithdrawnAllowance === 0 ? '0' : `−${totalWithdrawnAllowance.toLocaleString('nb-NO')}`} kr</dd>
+            <span>Uttatte penger gir ikke nye renter</span>
+          </div>
+          <div>
+            <dt>Sparepenger</dt>
+            <dd>{childSavingsBeforeInterest.toLocaleString('nb-NO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kr</dd>
+            <span>Etter registrerte uttak</span>
+          </div>
+          <div className="bank-stat-interest">
+            <dt>Opptjente renter</dt>
+            <dd>+{unpaidSettlementsInterest.toLocaleString('nb-NO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} kr</dd>
+            <span>Renter som står i banken</span>
+          </div>
+        </dl>
       </section>}
 
       {activeTab === 'account' && (
@@ -3783,42 +3843,20 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
           </summary>
           <ul className="log-list">
             {currentPeriodEntries.length === 0 && <li>Ingen registreringer ennå i denne perioden.</li>}
-            {currentPeriodEntries.map((entry) => {
-              const taskName =
-                entry.taskType === 'mandatory'
-                  ? activeProfile.mandatoryTasks.find((task) => task.id === entry.taskId)?.name
-                  : entry.taskType === 'bonus'
-                    ? activeProfile.bonusTasks.find((task) => task.id === entry.taskId)?.name
-                    : activeProfile.penaltyTasks.find((task) => task.id === entry.taskId)?.name
-
-              return (
-                <li key={entry.id}>
-                  <div>
-                    <strong>{entry.taskName ?? taskName ?? 'Ukjent oppgave'}</strong>
-                    <p className="mini">
-                      {entry.taskType === 'mandatory'
-                        ? 'Obligatorisk'
-                        : entry.taskType === 'bonus'
-                          ? 'Ekstra'
-                          : 'Trekk'}{' '}
-                      -{' '}
-                      {new Date(entry.timestamp).toLocaleString('nb-NO')}
-                    </p>
-                  </div>
-                  {(!isChildMode && canManage || canRegisterTasks && entry.taskType !== 'penalty') && (
-                    <button
-                      type="button"
-                      className="danger"
-                      onClick={() => removeEntry(entry.id)}
-                    >
-                      Fjern
-                    </button>
-                  )}
-                </li>
-              )
-            })}
+            {currentPeriodEntries.map((entry) => renderRegistrationEntry(entry, true))}
           </ul>
         </details>
+        {isChildMode && previousRegistrationPeriods.map(({ periodKey, entries }) => (
+          <details key={periodKey} className="previous-registration-period">
+            <summary className="registrations-summary">
+              {getPeriodSummaryLabel(periodKey, activeProfile.periodType)} · {entries.length}{' '}
+              {entries.length === 1 ? 'registrering' : 'registreringer'}
+            </summary>
+            <ul className="log-list">
+              {entries.map((entry) => renderRegistrationEntry(entry, false))}
+            </ul>
+          </details>
+        ))}
       </section>
       )}
 

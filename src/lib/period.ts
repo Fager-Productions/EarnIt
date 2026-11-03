@@ -62,6 +62,25 @@ export function getPeriodStartDate(periodKey: string, periodType: PeriodType): D
   return date
 }
 
+export function getPeriodSummaryLabel(periodKey: string, periodType: PeriodType): string {
+  const from = getPeriodStartDate(periodKey, periodType)
+  const to = new Date(from)
+  if (periodType === 'week') {
+    to.setDate(to.getDate() + 6)
+  } else {
+    to.setMonth(to.getMonth() + 1, 0)
+  }
+  const formatDate = (date: Date) =>
+    date.toLocaleDateString('nb-NO', { day: '2-digit', month: '2-digit', year: 'numeric' })
+  const dateRange = `${formatDate(from)}–${formatDate(to)}`
+
+  if (periodType === 'week') {
+    const [year, week] = periodKey.split('-W')
+    return `Uke ${week} (${year}) · ${dateRange}`
+  }
+  return `${getPeriodLabel(periodKey, periodType)} · ${dateRange}`
+}
+
 export function formatDateRangeLabel(date: Date, periodType: PeriodType): string {
   const formatDate = (value: Date) =>
     value.toLocaleDateString('nb-NO', {
