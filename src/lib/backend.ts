@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js'
+import { createClient, FunctionsHttpError } from '@supabase/supabase-js'
 import type { AppState, UserRole } from '../types'
 
 export type CloudContext = {
@@ -68,7 +68,19 @@ export async function familyRpc(name: string, args: Record<string, unknown> = {}
 }
 
 export async function loginAction(body: Record<string, unknown>) {
-  const { data, error } = await requireBackend().functions.invoke('child-login', { body })
+  const backend = requireBackend()
+  let headers: Record<string, string> | undefined
+  if (body.action !== 'login') {
+    const { data: refreshed, error: refreshError } = await backend.auth.refreshSession()
+    if (refreshError || !refreshed.session) {
+      throw new Error('Kunne ikke fornye foreldreinnloggingen. Logg ut og inn igjen før du prøver på nytt.')
+    }
+    headers = { Authorization: `Bearer ${refreshed.session.access_token}` }
+  }
+  const { data, error } = await backend.functions.invoke('child-login', { body, headers })
+  if (error instanceof FunctionsHttpError && error.context.status === 401) {
+    throw new Error('Innloggingen ble avvist av serveren. Logg ut og inn igjen før du prøver på nytt.')
+  }
   if (error) throw new Error('Innlogging eller kontoendring mislyktes. Prøv igjen eller kontakt en forelder.')
   if (!data || data.error) throw new Error('Innlogging eller kontoendring mislyktes.')
   return data as { code?: string; access_token?: string; refresh_token?: string }

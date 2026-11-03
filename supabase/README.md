@@ -122,6 +122,10 @@ before provisioning the replacement, so App must warn/confirm rotation first.
 If provisioning then fails, the old code is already revoked; display the error
 and retry generation. The edge `provision` action by itself rejects an existing
 login, rather than silently rotating. Logout failures are visible.
+Parent account actions refresh the Auth session before invoking the function
+and explicitly send the fresh token. A failed refresh prevents the action;
+a rejected session displays a sign-out/sign-in instruction. Mutations are
+never automatically retried after a failed function request.
 
 RPCs use these named arguments:
 
