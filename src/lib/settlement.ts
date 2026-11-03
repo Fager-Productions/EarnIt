@@ -83,10 +83,13 @@ export function computePeriodOutcome(input: PeriodOutcomeInput): PeriodOutcome {
   const pointsAvailable = Math.max(0, input.carryIn + netPoints)
 
   const sortedLevels = [...input.rewardLevels].sort((a, b) => a.minPoints - b.minPoints)
-  const reachedLevel = sortedLevels.filter((level) => level.minPoints <= pointsAvailable).at(-1) ?? null
+  const reachedLevels = sortedLevels.filter((level) => level.minPoints <= pointsAvailable)
+  const reachedLevel = reachedLevels.at(-1) ?? null
 
   const bonusCanApply = !input.bonusRequiresMandatory || mandatoryMet
-  const extraPaid = bonusCanApply ? (reachedLevel?.extraAmount ?? 0) : 0
+  const extraPaid = bonusCanApply
+    ? reachedLevels.reduce((sum, level) => sum + level.extraAmount, 0)
+    : 0
   const pointsSpent = bonusCanApply ? (reachedLevel?.minPoints ?? 0) : 0
   const carryOut = bonusCanApply ? Math.max(0, pointsAvailable - pointsSpent) : pointsAvailable
   const basePaid = mandatoryMet && input.mandatoryTasks.length > 0 ? input.baseAllowance : 0

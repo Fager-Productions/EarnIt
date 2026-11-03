@@ -1710,6 +1710,7 @@ button:hover {
 	align-items: center;
 	gap: 10px;
 	min-width: 0;
+	flex-wrap: wrap;
 }
 
 .bonus-form label.bonus-points-field {

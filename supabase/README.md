@@ -20,6 +20,9 @@ server/timezone implementation.
    Apply `migrations/202611010001_family_backend.sql` in the SQL editor or run
    `supabase link --project-ref YOUR_REF` and `supabase db push` after reviewing it.
    This migration is intended for a new project; do not reapply it manually.
+   For an existing project, also apply the incremental
+   `migrations/202611030001_bonus_task_recurrence.sql` migration in the SQL
+   editor (or with `supabase db push`) to enforce one-period bonus-task expiry.
 2. Enable email/password Auth; disable public signup. Configure reliable SMTP and
    email recovery templates. Set Auth Site URL to the app HTTPS origin and allow
    the exact app URL under redirect URLs (plus localhost only for development).
@@ -152,6 +155,10 @@ Children can append/remove only their own current-period mandatory/bonus
 entries, capped by requiredCount/one bonus; penalties, money, allowance, salary,
 bank fields and historic entries cannot be changed by child RPCs. Server-generated
 IDs/timestamps use the Europe/Oslo calendar (Monday weekly boundary).
+New bonus tasks may be marked to repeat each pay period; unmarked tasks are
+available only in the creation period, enforced by the
+`202611030001_bonus_task_recurrence.sql` database migration. Existing bonus
+tasks without recurrence metadata remain available each period.
 Entries include server snapshots of `periodType`, `taskName` and `points`.
 `upForGrabs` is matched across the family by trimmed case-insensitive task
 name + numeric points, consistent with the existing task identity convention;

@@ -76,7 +76,7 @@ describe('computePeriodOutcome', () => {
     expect(outcome.totalPaid).toBe(0)
   })
 
-  it('pays base allowance and reached-level bonus when mandatory tasks are met', () => {
+  it('pays cumulative reached-level bonuses with the weekly allowance', () => {
     const outcome = computePeriodOutcome({
       entries: [
         entry('mandatory', 'm1'),
@@ -99,9 +99,28 @@ describe('computePeriodOutcome', () => {
     expect(outcome.netPoints).toBe(10)
     expect(outcome.reachedLevelName).toBe('Sølv')
     expect(outcome.basePaid).toBe(100)
-    expect(outcome.extraPaid).toBe(25)
-    expect(outcome.totalPaid).toBe(125)
+    expect(outcome.extraPaid).toBe(35)
+    expect(outcome.totalPaid).toBe(135)
     expect(outcome.carryOut).toBe(0)
+  })
+
+  it('sums every reached reward level and spends points only through the highest reached threshold', () => {
+    const outcome = computePeriodOutcome({
+      entries: [entry('bonus', 'b1')],
+      periodType: 'week',
+      periodKey: '2026-W02',
+      mandatoryTasks: [],
+      bonusTasks,
+      penaltyTasks,
+      rewardLevels,
+      baseAllowance: 0,
+      carryIn: 10,
+      penaltyEnabled: false,
+      bonusRequiresMandatory: false,
+    })
+    expect(outcome.extraPaid).toBe(35)
+    expect(outcome.pointsSpent).toBe(10)
+    expect(outcome.carryOut).toBe(5)
   })
 
   it('ignores penalty points when penalties are disabled', () => {

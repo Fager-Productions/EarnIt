@@ -151,6 +151,7 @@ export function normalizeLoadedState(raw: unknown): AppState {
         ...task,
         points: Math.max(1, Math.floor(safeNumber(String(task.points), 1))),
         upForGrabs: task.upForGrabs ?? false,
+        repeatEachPeriod: task.repeatEachPeriod ?? true,
       })),
       penaltyTasks: (profile.penaltyTasks ?? []).map((task) => ({
         ...task,

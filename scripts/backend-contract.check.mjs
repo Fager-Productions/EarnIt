@@ -41,6 +41,18 @@ test('child-login deployment explicitly resolves its Supabase package import', a
   assert.match(importMap.imports['@supabase/supabase-js'], /^npm:@supabase\/supabase-js@\d+\.\d+\.\d+$/)
 })
 
+test('child registration expires one-period bonus tasks on the server', async () => {
+  const migration = await readFile(
+    new URL('../supabase/migrations/202611030001_bonus_task_recurrence.sql', import.meta.url),
+    'utf8',
+  )
+  assert.match(migration, /repeatEachPeriod/)
+  assert.match(migration, /createdPeriodKey/)
+  assert.match(migration, /createdPeriodKey' is not null/)
+  assert.match(migration, /TASK_PERIOD_EXPIRED/)
+  assert.match(migration, /Europe\/Oslo/)
+})
+
 test('accepts one family and allows adding families later', () => {
   const rows = Array.from({ length: 11 }, (_, index) => ({ email: `parent${index}@pilot-mail.org` }))
   assert.equal(validateFamilies(rows.slice(0, 1)).length, 1)

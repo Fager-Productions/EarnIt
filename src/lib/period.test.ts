@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { getIsoWeekKey, getMonthKey, getPeriodKey } from './period'
+import { getIsoWeekKey, getMonthKey, getPeriodKey, isBonusTaskAvailableInPeriod } from './period'
 
 describe('period keys', () => {
   it('starts a new weekly period on Monday', () => {
@@ -20,5 +20,17 @@ describe('period keys', () => {
   it('uses the ISO year for dates around New Year', () => {
     expect(getIsoWeekKey(new Date('2026-01-01T12:00:00'))).toBe('2026-W01')
     expect(getIsoWeekKey(new Date('2027-01-01T12:00:00'))).toBe('2026-W53')
+  })
+
+  it('expires one-period bonus tasks while preserving recurring and legacy tasks', () => {
+    const onePeriodTask = {
+      id: 'one-off', name: 'Rake løv', points: 2, upForGrabs: false,
+      repeatEachPeriod: false, createdPeriodKey: '2026-W37',
+    }
+    expect(isBonusTaskAvailableInPeriod(onePeriodTask, '2026-W37')).toBe(true)
+    expect(isBonusTaskAvailableInPeriod(onePeriodTask, '2026-W38')).toBe(false)
+    expect(isBonusTaskAvailableInPeriod({ ...onePeriodTask, repeatEachPeriod: true }, '2026-W38')).toBe(true)
+    expect(isBonusTaskAvailableInPeriod({ ...onePeriodTask, repeatEachPeriod: undefined }, '2026-W38')).toBe(true)
+    expect(isBonusTaskAvailableInPeriod({ ...onePeriodTask, createdPeriodKey: undefined }, '2026-W38')).toBe(true)
   })
 })

@@ -16,6 +16,8 @@ export type BonusTask = {
   id: string
   name: string
   points: number
+  repeatEachPeriod?: boolean
+  createdPeriodKey?: string
   // If true, completion is capped at 1 total across every child the task is assigned to (first come, first served).
   // If false, each assigned child can complete their own copy once per period.
   upForGrabs: boolean

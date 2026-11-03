@@ -27,6 +27,17 @@ describe('state migration and backup', () => {
     expect(twice.profiles[0].transactions).toHaveLength(1)
   })
 
+  it('keeps legacy bonus tasks recurring when loading older profiles', () => {
+    const profile = {
+      ...createDefaultProfile(),
+      bonusTasks: [{ id: 'legacy', name: 'Eldre bonus', points: 2, upForGrabs: false }],
+    }
+    const normalized = normalizeLoadedState({
+      ...initialState, profiles: [profile], activeChildId: profile.id,
+    })
+    expect(normalized.profiles[0].bonusTasks[0].repeatEachPeriod).toBe(true)
+  })
+
   it('accepts a real backup and rejects unrelated JSON or malformed financial values', () => {
     expect(parseBackupState(initialState).profiles).toHaveLength(1)
     expect(() => parseBackupState({ hello: 'world' })).toThrow()

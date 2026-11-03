@@ -4,7 +4,7 @@ En app for barn og foresatte med ukelønn/månedslønn, oppgaver og en intern sp
 
 - Fast lønn: betales hver periode, også uten registrerte oppgaver.
 - Obligatorisk lønn: betales når alle krav er oppfylt. Krever minst én obligatorisk oppgave.
-- Bonus: ekstraoppgaver gir poeng. Det høyeste oppnådde nivået gir bonus; nivåets poeng brukes, resten overføres.
+- Bonus: ekstraoppgaver gir poeng. Hvert oppnådd bonusnivå gir sin bonus, og beløpene summeres. Poengene opp til høyeste oppnådde nivå brukes; resten overføres.
 - De tre delene kan kombineres. Sett fast eller obligatorisk lønn til 0 for å deaktivere den delen.
 - «Krev obligatoriske oppgaver før bonus» styrer utbetaling, ikke muligheten til å samle bonuspoeng.
 
@@ -25,6 +25,7 @@ Uten Supabase-konfigurasjon lagres data bare lokalt i nettleseren. Med Supabase 
 - Definer obligatoriske oppgaver med antall ganger de ma gjores.
 - Obligatoriske oppgaver opprettes øverst i modulen og vises som faste oppgavekort under. Endringer gjøres ved å slette og opprette en ny; registreringer beholdes og kan fjernes under Registreringer.
 - Definer ekstraoppgaver med poengverdi.
+- Obligatoriske oppgaver følger barnets lønnsperiode automatisk. Nye ekstraoppgaver kan gjentas for hver lønnsperiode med avkrysningen «Gjenta hver lønnsperiode»; uten avkrysning utløper oppgaven etter perioden den ble opprettet i. Eldre ekstraoppgaver fortsetter som før. I eksisterende skydatabaser må den nye migrasjonen `202611030001_bonus_task_recurrence.sql` kjøres før engangsoppgaver kan registreres sikkert.
 - Opprettede ekstraoppgaver kan ikke redigeres. Slett oppgaven og opprett en ny for å endre navn, poeng eller «Up for grabs». Tidligere registreringer beholdes.
 - Regler for poengtrekk opprettes og redigeres per barn under Innstillinger → Regler. Når poengtrekk er aktivert, vises reglene og poengverdien under «Hva kan gi poengtrekk?». Å opprette en regel trekker ingen poeng; bare foreldrenes «Utfør trekk» registrerer selve trekket.
 - Definer flere nivaaer for ekstra utbetaling (min poeng -> ekstra kr).
@@ -40,7 +41,7 @@ Uten Supabase-konfigurasjon lagres data bare lokalt i nettleseren. Med Supabase 
 
 ## Lønn og renter
 
-For eksempel gir fast lønn 50 kr, obligatorisk lønn 100 kr og nådd bonusnivå 20 kr totalt 170 kr når kravene er oppfylt. Uten fullførte obligatoriske oppgaver blir det 50 kr, eller 70 kr hvis bonus ikke krever obligatoriske oppgaver.
+For eksempel gir fast lønn 50 kr, obligatorisk lønn 100 kr og to nådde bonusnivåer på 20 kr og 30 kr totalt 200 kr når kravene er oppfylt. Uten fullførte obligatoriske oppgaver blir det 50 kr, eller 100 kr hvis bonus ikke krever obligatoriske oppgaver.
 
 Nye lønnsbeløp gjelder den åpne perioden. Historiske oppgjør endres ikke. Periodebytte er sperret mens den åpne perioden har registreringer; tidligere registreringer beholder sin periodetype og registrerte poengverdi.
 

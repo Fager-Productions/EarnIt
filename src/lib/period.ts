@@ -1,4 +1,4 @@
-import type { Entry, PeriodType } from '../types'
+import type { BonusTask, Entry, PeriodType } from '../types'
 import type { InterestPeriod } from './coreLogic'
 
 export function startOfWeek(input: Date): Date {
@@ -29,6 +29,13 @@ export function getMonthKey(date: Date): string {
 
 export function getPeriodKey(date: Date, periodType: PeriodType): string {
   return periodType === 'week' ? getIsoWeekKey(date) : getMonthKey(date)
+}
+
+export function isBonusTaskAvailableInPeriod(
+  task: BonusTask,
+  periodKey: string,
+): boolean {
+  return task.repeatEachPeriod !== false || !task.createdPeriodKey || task.createdPeriodKey === periodKey
 }
 
 export function getPeriodLabel(periodKey: string, periodType: PeriodType): string {

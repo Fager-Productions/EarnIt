@@ -37,6 +37,7 @@ import {
   getMonthKey,
   getPeriodKey,
   getPeriodLabel,
+  isBonusTaskAvailableInPeriod,
   isEntryInCurrentPeriod,
 } from './lib/period'
 import {
@@ -101,6 +102,7 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
   const [newBonusName, setNewBonusName] = useState('')
   const [newBonusPoints, setNewBonusPoints] = useState(1)
   const [newBonusUpForGrabs, setNewBonusUpForGrabs] = useState(false)
+  const [newBonusRepeatEachPeriod, setNewBonusRepeatEachPeriod] = useState(false)
   const [newPenaltyName, setNewPenaltyName] = useState('')
   const [newPenaltyPoints, setNewPenaltyPoints] = useState(1)
   const [newLevelName, setNewLevelName] = useState('')
@@ -294,11 +296,11 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
   )
   const activeProfileBonusTaskByKey = useMemo(() => {
     const map = new Map<string, BonusTask>()
-    activeProfile.bonusTasks.forEach((task) => {
-      map.set(getBonusTaskKey(task.name, task.points), task)
-    })
+    activeProfile.bonusTasks
+      .filter(task => isBonusTaskAvailableInPeriod(task, currentPeriodKey))
+      .forEach(task => map.set(getBonusTaskKey(task.name, task.points), task))
     return map
-  }, [activeProfile.bonusTasks])
+  }, [activeProfile.bonusTasks, currentPeriodKey])
 
   const sharedBonusTasks = useMemo(() => {
     const taskMap = new Map<
@@ -313,23 +315,26 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
     >()
 
     state.profiles.forEach((profile) => {
-      profile.bonusTasks.forEach((task) => {
-        const key = getBonusTaskKey(task.name, task.points)
-        const existing = taskMap.get(key)
-        if (!existing) {
-          taskMap.set(key, {
-            key,
-            name: task.name,
-            points: task.points,
-            upForGrabs: task.upForGrabs,
-            childNames: [profile.childName],
-          })
-          return
-        }
-        if (!existing.childNames.includes(profile.childName)) {
-          existing.childNames.push(profile.childName)
-        }
-      })
+      const periodKey = getPeriodKey(now, profile.periodType)
+      profile.bonusTasks
+        .filter(task => isBonusTaskAvailableInPeriod(task, periodKey))
+        .forEach((task) => {
+          const key = getBonusTaskKey(task.name, task.points)
+          const existing = taskMap.get(key)
+          if (!existing) {
+            taskMap.set(key, {
+              key,
+              name: task.name,
+              points: task.points,
+              upForGrabs: task.upForGrabs,
+              childNames: [profile.childName],
+            })
+            return
+          }
+          if (!existing.childNames.includes(profile.childName)) {
+            existing.childNames.push(profile.childName)
+          }
+        })
     })
 
     return Array.from(taskMap.values())
@@ -340,7 +345,7 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
         ),
       }))
       .sort((a, b) => a.name.localeCompare(b.name, 'nb-NO', { sensitivity: 'base' }))
-  }, [state.profiles])
+  }, [state.profiles, now])
 
   const sharedBonusEntriesThisPeriod = useMemo(() => {
     const entries = state.profiles.flatMap((profile) => {
@@ -696,7 +701,7 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
     : nextLevel
       ? Math.min(100, Math.round((pointsAvailableNow / nextLevel.minPoints) * 100))
       : 100
-  const maxExtraAmount = sortedLevels.at(-1)?.extraAmount ?? 0
+  const maxExtraAmount = sortedLevels.reduce((sum, level) => sum + level.extraAmount, 0)
   const maxPossiblePayout = (activeProfile.fixedAllowance ?? 0) +
     (activeProfile.mandatoryTasks.length > 0 ? activeProfile.baseAllowance : 0) + maxExtraAmount
   const payoutProgressPct =
@@ -1786,6 +1791,8 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
           name: newBonusName.trim(),
           points: Math.max(1, Math.floor(newBonusPoints)),
           upForGrabs: newBonusUpForGrabs,
+          repeatEachPeriod: newBonusRepeatEachPeriod,
+          createdPeriodKey: getPeriodKey(now, profile.periodType),
         },
       ],
     }))
@@ -1795,6 +1802,7 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
     setNewBonusName('')
     setNewBonusPoints(1)
     setNewBonusUpForGrabs(false)
+    setNewBonusRepeatEachPeriod(false)
   }
 
   function addPenaltyTask(event: FormEvent) {
@@ -3593,6 +3601,14 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
                     />
                     Up for grabs
                   </label>
+                  <label className="mini up-for-grabs-toggle">
+                    <input
+                      type="checkbox"
+                      checked={newBonusRepeatEachPeriod}
+                      onChange={(event) => setNewBonusRepeatEachPeriod(event.target.checked)}
+                    />
+                    Gjenta hver lønnsperiode
+                  </label>
                   <button type="submit">Legg til</button>
                 </div>
               </form>
@@ -3603,6 +3619,9 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
             {canManageTaskSetup
               ? sortedBonusTasks.map((task) => {
                   const taskKey = getBonusTaskKey(task.name, task.points)
+                  const taskAvailableThisPeriod = isBonusTaskAvailableInPeriod(
+                    task, currentPeriodKey,
+                  )
                   const alreadyTaken = task.upForGrabs
                     ? (sharedBonusCountByTaskKey.get(taskKey) ?? 0) > 0
                     : (bonusCountMap[task.id] ?? 0) > 0
@@ -3616,6 +3635,11 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
                         <strong className="bonus-task-name">{task.name}</strong>
                         <span className="bonus-compact-points">{task.points} poeng</span>
                         {task.upForGrabs && <span className="mini bonus-task-shared">Up for grabs</span>}
+                        {task.repeatEachPeriod === false && (
+                          <span className="mini bonus-task-shared">
+                            {taskAvailableThisPeriod ? 'Engangsoppgave' : 'Engangsoppgave · utløpt'}
+                          </span>
+                        )}
                       </div>
                       <div className="bonus-compact-bottom">
                         <p className="mini task-applies-to" title={alreadyTaken
