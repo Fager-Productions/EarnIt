@@ -1686,7 +1686,18 @@ button:hover {
 }
 
 .level-form {
-	grid-template-columns: 2fr 1fr 1fr auto;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.level-form .level-name-field,
+.level-form > button {
+	grid-column: 1 / -1;
+}
+
+.level-form > label,
+.level-form input {
+	min-width: 0;
+	width: 100%;
 }
 
 .bonus-form {

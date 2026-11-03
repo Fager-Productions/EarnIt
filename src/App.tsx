@@ -890,7 +890,7 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
     const nextProfiles = state.profiles.map((profile) =>
       profile.id === activeProfile.id ? updater(profile) : profile,
     )
-    persist({ ...state, profiles: nextProfiles })
+    return persist({ ...state, profiles: nextProfiles })
   }
 
   function updateProfileById(profileId: string, updater: (profile: ChildProfile) => ChildProfile) {
@@ -1821,16 +1821,20 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
     setNewPenaltyPoints(1)
   }
 
-  function addRewardLevel(event: FormEvent) {
+  async function addRewardLevel(event: FormEvent) {
     event.preventDefault()
     if (mustRenameDefaultChildBeforeTaskSetup) {
       window.alert(`Endre barnenavnet fra "${DEFAULT_CHILD_NAME}" før du lager oppgaver.`)
       return
     }
-    if (!canManage || !newLevelName.trim()) {
+    if (!canManage) {
       return
     }
-    updateActiveProfile((profile) => ({
+    if (!newLevelName.trim()) {
+      window.alert('Skriv et navn på bonusnivået.')
+      return
+    }
+    const saved = await updateActiveProfile((profile) => ({
       ...profile,
       rewardLevels: [
         ...profile.rewardLevels,
@@ -1842,6 +1846,9 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
         },
       ],
     }))
+    if (!saved) {
+      return
+    }
     setNewLevelName('')
     setNewLevelPoints(5)
     setNewLevelAmount(10)
@@ -3029,11 +3036,15 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
 
               {canManageTaskSetup && (
                 <form className="inline-form level-form" onSubmit={addRewardLevel}>
-                  <input
-                    placeholder="Nivånavn"
-                    value={newLevelName}
-                    onChange={(event) => setNewLevelName(event.target.value)}
-                  />
+                  <label className="mini level-name-field">
+                    Nivånavn
+                    <input
+                      required
+                      placeholder="For eksempel Bronse"
+                      value={newLevelName}
+                      onChange={(event) => setNewLevelName(event.target.value)}
+                    />
+                  </label>
                   <label className="mini">
                     Min. poeng
                     <input

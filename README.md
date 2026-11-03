@@ -28,6 +28,7 @@ Uten Supabase-konfigurasjon lagres data bare lokalt i nettleseren. Med Supabase 
 - Opprettede ekstraoppgaver kan ikke redigeres. Slett oppgaven og opprett en ny for å endre navn, poeng eller «Up for grabs». Tidligere registreringer beholdes.
 - Regler for poengtrekk opprettes og redigeres per barn under Innstillinger → Regler. Når poengtrekk er aktivert, vises reglene og poengverdien under «Hva kan gi poengtrekk?». Å opprette en regel trekker ingen poeng; bare foreldrenes «Utfør trekk» registrerer selve trekket.
 - Definer flere nivaaer for ekstra utbetaling (min poeng -> ekstra kr).
+- Bonusnivåer krever nivånavn, minste poengsum og ekstra kr. Skjemaet tømmes først når nivået er lagret; ved lagringsfeil beholdes det du har skrevet.
 - Registrer utforte oppgaver med dato/tid.
 - Oppgaver er hvite før registrering, gule når obligatoriske oppgaver er delvis fullført og grønne når de er ferdige. Ekstraoppgaver fullføres med én registrering. Foreldre og barn kan fjerne oppgaveregistreringer under Registreringer; bare foreldre i foreldervisning kan angre poengtrekk.
 - Barn har fire faner: Hjem, Oppgaver, Tidligere og Banken. Egne registreringer vises i den sammenleggbare seksjonen «Mine registreringer» under Oppgaver, hvor barnet kan angre oppgaveregistreringer, men ikke poengtrekk. Foreldre beholder fanen Registreringer.
