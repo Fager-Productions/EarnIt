@@ -29,6 +29,7 @@ Uten Supabase-konfigurasjon lagres data bare lokalt i nettleseren. Med Supabase 
 - Ved opprettelse av obligatoriske oppgaver og ekstraoppgaver vises «Alle barn» bare når familien har flere barn. Med ett barn vises bare barnets navn.
 - Obligatoriske oppgaver opprettes øverst i modulen og vises som faste oppgavekort under. Endringer gjøres ved å slette og opprette en ny; registreringer beholdes og kan fjernes under Registreringer.
 - Oppgavelistene vises i én kolonne på mobil, med obligatoriske oppgaver før ekstraoppgaver. Status og knapper brytes til egne linjer ved behov.
+- Produksjonsbygget retter JavaScript og CSS mot Safari/iOS 15+, Chrome 90+, Edge 90+ og Firefox 90+. Dette inkluderer iPhone 7 med iOS 15. Byggmål erstatter ikke testing i nettleserne eller gir polyfills for manglende nettleser-API-er.
 - Definer ekstraoppgaver med poengverdi.
 - Obligatoriske oppgaver følger barnets lønnsperiode automatisk. Nye ekstraoppgaver kan gjentas for hver lønnsperiode med avkrysningen «Gjenta hver lønnsperiode»; uten avkrysning utløper oppgaven etter perioden den ble opprettet i. Eldre ekstraoppgaver fortsetter som før. I eksisterende skydatabaser må den nye migrasjonen `202611030001_bonus_task_recurrence.sql` kjøres før engangsoppgaver kan registreres sikkert.
 - Opprettede ekstraoppgaver kan ikke redigeres. Slett oppgaven og opprett en ny for å endre navn, poeng eller «Up for grabs». Tidligere registreringer beholdes.
