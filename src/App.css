@@ -2155,6 +2155,57 @@ button:hover {
 
 }
 
+@media (max-width: 600px) {
+	.hero-panel {
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+	}
+
+	.hero-panel > div,
+	.hero-side,
+	.child-header,
+	.child-header .hero-profile-row,
+	.child-header .hero-period {
+		width: 100%;
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	.hero-side {
+		justify-items: stretch;
+	}
+
+	.child-header .hero-profile-row {
+		display: flex;
+		flex-direction: column;
+		align-items: stretch;
+	}
+
+	.child-header .child-name-box {
+		flex: 0 1 auto;
+		width: 100%;
+		padding: 8px 12px;
+	}
+
+	.child-header .hero-child-name {
+		font-size: 1.25rem;
+		word-break: normal;
+		overflow-wrap: break-word;
+	}
+
+	.child-header .logout-mini {
+		align-self: flex-end;
+	}
+
+	.child-header .hero-period {
+		padding: 8px 12px;
+		font-size: 0.82rem;
+		word-break: normal;
+		overflow-wrap: break-word;
+	}
+}
+
 @media (min-width: 390px) and (max-width: 430px) {
 	.hero-meta p {
 		font-size: 0.9rem;

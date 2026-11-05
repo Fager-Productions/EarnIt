@@ -18,7 +18,7 @@ Uten Supabase-konfigurasjon lagres data bare lokalt i nettleseren. Med Supabase 
 - Foreldre kan forhåndsvise barnesiden, men utførte oppgaver registreres bare fra barnets innlogging. Ingen testregistrering i foreldremodus.
 - Innloggede foreldre kan bytte sky-passord under Innstillinger → Foreldre. Knappen vises ikke i forhåndsvisningen av barnesiden.
 - I foreldrenes forhåndsvisning kan barnet velges ved å trykke på navnet øverst. Barnets egen innlogging har ingen profilvelger.
-- På smale skjermer tilpasses barnets navn og periode til headerens bredde. Utloggingsknappen flyttes til neste linje ved behov.
+- På skjermer opptil 600 px stables logo, barnets navn, utlogging og periode under hverandre. Navn og dato bruker mindre tekst og tilpasses kortets bredde.
 - Foreldreoversikten og banken viser alle barn som standard og kan filtreres med barnemenyene. Barnemenyen i innstillingene velger bare hvem lønn og regler redigeres for; den aktiverer eller deaktiverer ikke en konto.
 - Utbetalingsprognosen viser flere barn i hver sin diagramboks, to per rad på brede skjermer og én per rad på mobil. Boksene bruker samme beløpsskala og har fargeforklaring under søylene.
 - Sletting av barn krever at forelderen skriver «slette» i bekreftelsen. Barnets profil og tilhørende data fjernes; dette kan ikke angres i appen.
