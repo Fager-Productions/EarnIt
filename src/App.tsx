@@ -63,7 +63,7 @@ import InstallHelp from './InstallHelp'
 
 const ParentDashboard = lazy(() => import('./ParentDashboard'))
 
-function App({ cloud }: { cloud?: CloudContext } = {}) {
+function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeCloudPassword?: () => void } = {}) {
   const previouslyFocusedValueInput = useRef<HTMLInputElement | null>(null)
   const [state, setState] = useState<AppState>(() => cloud?.state ?? loadState())
   const [role, setRole] = useState<UserRole>(cloud?.role ?? 'child')
@@ -1489,7 +1489,7 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
 
   async function replaceChildPinForProfile(profileId: string) {
     if (cloud) {
-      if (window.confirm('Opprette ny barnekode? Den gamle koden slutter å virke.')) {
+      if (window.confirm('Opprette barnekode? Hvis barnet allerede har en kode, slutter den å virke.')) {
         await generateCodeForProfile(profileId)
       }
       return
@@ -2610,7 +2610,7 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
                             )}
                             <p className="mini">
                               Koden vises bare når den opprettes. Noter den og del den med barnet.
-                              Ved ny kode slutter den gamle å virke.
+                              Hvis barnet allerede har en kode, erstattes den når du genererer en ny.
                             </p>
                             <div className="child-code-actions">
                               <button type="button" onClick={() => replaceChildPinForProfile(profile.id)}>Generer kode</button>
@@ -2841,18 +2841,117 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
               </p>
             </section>
 
+            <section className="settings-module module-levels">
+              <h3>
+                <span className="module-glyph" aria-hidden="true">N</span>
+                Bonusnivåer
+              </h3>
+              <p className="mini module-subtitle">Legg til nivåer som gir ekstra lønn når barnet får nok poeng.</p>
+              <ul className="task-list">
+                {sortedLevels.map((level) => (
+                  <li key={level.id}>
+                    <div className="level-row">
+                      {canManageTaskSetup ? (
+                        <input
+                          value={level.name}
+                          onChange={(event) => updateLevel(level.id, { name: event.target.value })}
+                        />
+                      ) : (
+                        <strong>{level.name}</strong>
+                      )}
+                      <div className="mini level-inline-grid">
+                        <label>
+                          <span>Min. poeng</span>
+                          <input
+                            type="number"
+                            min={1}
+                            disabled={!canManageTaskSetup}
+                            value={level.minPoints}
+                            onChange={(event) =>
+                              updateLevel(level.id, {
+                                minPoints: Math.max(1, Math.floor(safeNumber(event.target.value, level.minPoints))),
+                              })
+                            }
+                          />
+                        </label>
+                        <label>
+                          <span>Ekstra kr</span>
+                          <input
+                            type="number"
+                            min={0}
+                            disabled={!canManageTaskSetup}
+                            value={level.extraAmount}
+                            onChange={(event) =>
+                              updateLevel(level.id, {
+                                extraAmount: Math.max(0, Math.floor(safeNumber(event.target.value, level.extraAmount))),
+                              })
+                            }
+                          />
+                        </label>
+                      </div>
+                    </div>
+                    {canManageTaskSetup && (
+                      <button type="button" className="danger" onClick={() => removeLevel(level.id)}>
+                        Slett
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+
+              {canManageTaskSetup && (
+                <form className="inline-form level-form" onSubmit={addRewardLevel}>
+                  <label className="mini level-name-field">
+                    Nivånavn
+                    <input
+                      required
+                      placeholder="For eksempel Bronse"
+                      value={newLevelName}
+                      onChange={(event) => setNewLevelName(event.target.value)}
+                    />
+                  </label>
+                  <label className="mini">
+                    Min. poeng
+                    <input
+                      type="number"
+                      min={1}
+                      value={newLevelPoints}
+                      onChange={(event) => setNewLevelPoints(Math.max(1, safeNumber(event.target.value, 1)))}
+                    />
+                  </label>
+                  <label className="mini">
+                    Ekstra kr
+                    <input
+                      type="number"
+                      min={0}
+                      value={newLevelAmount}
+                      onChange={(event) => setNewLevelAmount(Math.max(0, safeNumber(event.target.value, 0)))}
+                    />
+                  </label>
+                  <button type="submit">Legg til nivå</button>
+                </form>
+              )}
+            </section>
+
             <section className="settings-module module-security">
               <h3>
                 <span className="module-glyph" aria-hidden="true">A</span>
                 Foreldre
               </h3>
-              <p className="mini module-subtitle">Lag brukernavn og passord for nye foreldre.</p>
+              <p className="mini module-subtitle">
+                {cloud ? 'Administrer passordet for foreldrekontoen din.' : 'Lag brukernavn og passord for nye foreldre.'}
+              </p>
 
               {cloud ? (
-                <p className="mini">
-                  Foreldrekontoer administreres i Supabase. Testeren bruker «Glemt passord» på innloggingssiden.
-                  Nye testfamilier opprettes med oppsettsskriptet, ikke med lokale kontoer.
-                </p>
+                <>
+                  <p className="mini">
+                    Foreldrekontoer administreres i Supabase. Testeren bruker «Glemt passord» på innloggingssiden.
+                    Nye testfamilier opprettes med oppsettsskriptet, ikke med lokale kontoer.
+                  </p>
+                  <button type="button" disabled={!onChangeCloudPassword} onClick={onChangeCloudPassword}>
+                    Bytt sky-passord
+                  </button>
+                </>
               ) : isParentAdminSession ? (
                 <>
                   <form className="inline-form" onSubmit={createParentAccessAccount}>
@@ -3039,98 +3138,6 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
                 <li>Bruk regler for obligatoriske oppgaver, bonusnivåer, renter og trekk for å tilpasse appen.</li>
                 <li>Se oversikt, banken og historikk for å følge utviklingen over tid.</li>
               </ol>
-            </section>
-
-            <section className="settings-module module-levels">
-              <h3>
-                <span className="module-glyph" aria-hidden="true">N</span>
-                Bonusnivåer
-              </h3>
-              <p className="mini module-subtitle">Legg til nivåer som gir ekstra lønn når barnet får nok poeng.</p>
-              <ul className="task-list">
-                {sortedLevels.map((level) => (
-                  <li key={level.id}>
-                    <div className="level-row">
-                      {canManageTaskSetup ? (
-                        <input
-                          value={level.name}
-                          onChange={(event) => updateLevel(level.id, { name: event.target.value })}
-                        />
-                      ) : (
-                        <strong>{level.name}</strong>
-                      )}
-                      <div className="mini level-inline-grid">
-                        <label>
-                          <span>Min. poeng</span>
-                          <input
-                            type="number"
-                            min={1}
-                            disabled={!canManageTaskSetup}
-                            value={level.minPoints}
-                            onChange={(event) =>
-                              updateLevel(level.id, {
-                                minPoints: Math.max(1, Math.floor(safeNumber(event.target.value, level.minPoints))),
-                              })
-                            }
-                          />
-                        </label>
-                        <label>
-                          <span>Ekstra kr</span>
-                          <input
-                            type="number"
-                            min={0}
-                            disabled={!canManageTaskSetup}
-                            value={level.extraAmount}
-                            onChange={(event) =>
-                              updateLevel(level.id, {
-                                extraAmount: Math.max(0, Math.floor(safeNumber(event.target.value, level.extraAmount))),
-                              })
-                            }
-                          />
-                        </label>
-                      </div>
-                    </div>
-                    {canManageTaskSetup && (
-                      <button type="button" className="danger" onClick={() => removeLevel(level.id)}>
-                        Slett
-                      </button>
-                    )}
-                  </li>
-                ))}
-              </ul>
-
-              {canManageTaskSetup && (
-                <form className="inline-form level-form" onSubmit={addRewardLevel}>
-                  <label className="mini level-name-field">
-                    Nivånavn
-                    <input
-                      required
-                      placeholder="For eksempel Bronse"
-                      value={newLevelName}
-                      onChange={(event) => setNewLevelName(event.target.value)}
-                    />
-                  </label>
-                  <label className="mini">
-                    Min. poeng
-                    <input
-                      type="number"
-                      min={1}
-                      value={newLevelPoints}
-                      onChange={(event) => setNewLevelPoints(Math.max(1, safeNumber(event.target.value, 1)))}
-                    />
-                  </label>
-                  <label className="mini">
-                    Ekstra kr
-                    <input
-                      type="number"
-                      min={0}
-                      value={newLevelAmount}
-                      onChange={(event) => setNewLevelAmount(Math.max(0, safeNumber(event.target.value, 0)))}
-                    />
-                  </label>
-                  <button type="submit">Legg til nivå</button>
-                </form>
-              )}
             </section>
 
             <section className="settings-module module-interest">

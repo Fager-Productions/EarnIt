@@ -16,7 +16,9 @@ Uten Supabase-konfigurasjon lagres data bare lokalt i nettleseren. Med Supabase 
 	- Barnetilgang: kan registrere utforte oppgaver.
 	- Foreldretilgang: administrasjon av regler, nivaaer og vedlikehold.
 - Foreldre kan forhåndsvise barnesiden, men utførte oppgaver registreres bare fra barnets innlogging. Ingen testregistrering i foreldremodus.
+- Innloggede foreldre kan bytte sky-passord under Innstillinger → Foreldre. Knappen vises ikke i forhåndsvisningen av barnesiden.
 - I foreldrenes forhåndsvisning kan barnet velges ved å trykke på navnet øverst. Barnets egen innlogging har ingen profilvelger.
+- På smale skjermer tilpasses barnets navn og periode til headerens bredde. Utloggingsknappen flyttes til neste linje ved behov.
 - Foreldreoversikten og banken viser alle barn som standard og kan filtreres med barnemenyene. Barnemenyen i innstillingene velger bare hvem lønn og regler redigeres for; den aktiverer eller deaktiverer ikke en konto.
 - Utbetalingsprognosen viser flere barn i hver sin diagramboks, to per rad på brede skjermer og én per rad på mobil. Boksene bruker samme beløpsskala og har fargeforklaring under søylene.
 - Sletting av barn krever at forelderen skriver «slette» i bekreftelsen. Barnets profil og tilhørende data fjernes; dette kan ikke angres i appen.
@@ -26,11 +28,13 @@ Uten Supabase-konfigurasjon lagres data bare lokalt i nettleseren. Med Supabase 
 - Definer obligatoriske oppgaver med antall ganger de ma gjores.
 - Ved opprettelse av obligatoriske oppgaver og ekstraoppgaver vises «Alle barn» bare når familien har flere barn. Med ett barn vises bare barnets navn.
 - Obligatoriske oppgaver opprettes øverst i modulen og vises som faste oppgavekort under. Endringer gjøres ved å slette og opprette en ny; registreringer beholdes og kan fjernes under Registreringer.
+- Oppgavelistene vises i én kolonne på mobil, med obligatoriske oppgaver før ekstraoppgaver. Status og knapper brytes til egne linjer ved behov.
 - Definer ekstraoppgaver med poengverdi.
 - Obligatoriske oppgaver følger barnets lønnsperiode automatisk. Nye ekstraoppgaver kan gjentas for hver lønnsperiode med avkrysningen «Gjenta hver lønnsperiode»; uten avkrysning utløper oppgaven etter perioden den ble opprettet i. Eldre ekstraoppgaver fortsetter som før. I eksisterende skydatabaser må den nye migrasjonen `202611030001_bonus_task_recurrence.sql` kjøres før engangsoppgaver kan registreres sikkert.
 - Opprettede ekstraoppgaver kan ikke redigeres. Slett oppgaven og opprett en ny for å endre navn, poeng eller «Up for grabs». Tidligere registreringer beholdes.
 - Regler for poengtrekk opprettes og redigeres per barn under Innstillinger → Regler. Når poengtrekk er aktivert, vises reglene og poengverdien under «Hva kan gi poengtrekk?». Å opprette en regel trekker ingen poeng; bare foreldrenes «Utfør trekk» registrerer selve trekket.
 - Definer flere nivaaer for ekstra utbetaling (min poeng -> ekstra kr).
+- Bonusnivåer ligger rett under Barnets innstillinger og gjelder barnet valgt der.
 - Bonusnivåer krever nivånavn, minste poengsum og ekstra kr. Skjemaet tømmes først når nivået er lagret; ved lagringsfeil beholdes det du har skrevet.
 - Registrer utforte oppgaver med dato/tid.
 - Oppgaver er hvite før registrering, gule når obligatoriske oppgaver er delvis fullført og grønne når de er ferdige. Ekstraoppgaver fullføres med én registrering. Foreldre og barn kan fjerne oppgaveregistreringer under Registreringer; bare foreldre i foreldervisning kan angre poengtrekk.

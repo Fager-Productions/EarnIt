@@ -109,6 +109,8 @@ img {
 
 .hero-period {
 	display: grid;
+	grid-template-columns: minmax(0, 1fr);
+	min-width: 0;
 	gap: 4px;
 }
 
@@ -122,6 +124,7 @@ img {
 	width: 100%;
 	min-width: 0;
 	display: grid;
+	grid-template-columns: minmax(0, 1fr);
 	gap: 12px;
 }
 
@@ -140,9 +143,12 @@ img {
 	flex-direction: row;
 	align-items: center;
 	justify-content: space-between;
+	min-width: 0;
+	flex-wrap: wrap;
 }
 
 .child-name-box {
+	flex: 1 1 140px;
 	min-width: 0;
 	padding: 10px 16px;
 	border: 1px solid var(--line);
@@ -157,8 +163,7 @@ img {
 }
 
 .child-preview-selector {
-	flex: 0 1 auto;
-	max-width: calc(100% - 100px);
+	max-width: 100%;
 	font-weight: 700;
 	cursor: pointer;
 }
@@ -849,7 +854,8 @@ h2 {
 	order: 1;
 }
 
-.parent-tools > .module-child-settings {
+.parent-tools > .module-child-settings,
+.parent-tools > .module-levels {
 	order: 2;
 }
 
@@ -1367,7 +1373,7 @@ h2 {
 .grid-two {
 	display: grid;
 	gap: 12px;
-	grid-template-columns: repeat(2, minmax(0, 1fr));
+	grid-template-columns: minmax(0, 1fr);
 }
 
 .grid-two > *,
@@ -1626,6 +1632,7 @@ details[open] > .registrations-summary {
 
 .bonus-compact-bottom {
 	display: flex;
+	flex-wrap: wrap;
 	align-items: center;
 	justify-content: space-between;
 	gap: 8px;
@@ -1859,9 +1866,27 @@ button:hover {
 	.chart-span-2 {
 		grid-column: auto;
 	}
+
+	.hero-panel {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.hero-panel > *,
+	.hero-side {
+		min-width: 0;
+		max-width: 100%;
+	}
+
+	.hero-side {
+		width: 100%;
+	}
 }
 
 @media (min-width: 1041px) {
+	.grid-two {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+
 	.app-shell {
 		max-width: 1460px;
 	}
@@ -1956,6 +1981,10 @@ button:hover {
 	}
 
 	.mandatory-compact-top {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.bonus-compact-top {
 		grid-template-columns: minmax(0, 1fr);
 	}
 

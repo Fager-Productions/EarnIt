@@ -176,11 +176,11 @@ function AuthenticatedApp() {
       }}>Hent nyeste data</button>}
     </div>}
     {notice && <p role="status">{notice}</p>}
-    {session && snapshot?.role === 'parent' && !recovery && !mustChange &&
-      <button disabled={busy} onClick={() => setRecovery(true)}>Bytt sky-passord</button>}
     {!ready ? <p>Laster innlogging …</p> :
       session && !recovery && !mustChange ?
-        snapshot ? <App cloud={cloud} /> : <p>Laster familiens data … <button onClick={() => {
+        snapshot ? <App cloud={cloud} onChangeCloudPassword={
+          snapshot.role === 'parent' && !busy ? () => setRecovery(true) : undefined
+        } /> : <p>Laster familiens data … <button onClick={() => {
           void logout().catch(() => {})
         }}>Logg ut</button></p> :
         <main className="app-shell cloud-login">
