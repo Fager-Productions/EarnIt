@@ -27,11 +27,26 @@ body {
 }
 
 .app-shell {
+	width: 100%;
 	max-width: 1360px;
 	margin: 0 auto;
 	padding: 26px;
 	display: grid;
+	grid-template-columns: minmax(0, 1fr);
 	gap: 16px;
+}
+
+.app-shell > *,
+.app-content > *,
+.chart-card > *,
+.chart-wrap > * {
+	min-width: 0;
+	max-width: 100%;
+}
+
+img {
+	max-width: 100%;
+	height: auto;
 }
 
 .app-content {
@@ -498,6 +513,7 @@ h2 {
 
 .chart-wrap {
 	width: 100%;
+	min-width: 0;
 	height: 260px;
 }
 
@@ -507,6 +523,36 @@ h2 {
 
 .chart-hero .chart-wrap {
 	height: 340px;
+}
+
+.payout-chart-grid {
+	display: grid;
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	gap: 12px;
+}
+
+.payout-child-card {
+	min-width: 0;
+	padding: 12px;
+	border: 1px solid var(--line);
+	border-radius: 12px;
+	background: #fff;
+}
+
+.payout-child-card h3 {
+	margin: 0 0 10px;
+	overflow-wrap: anywhere;
+}
+
+.chart-hero .payout-child-card .chart-wrap {
+	height: 250px;
+	min-width: 0;
+}
+
+@media (max-width: 760px) {
+	.payout-chart-grid {
+		grid-template-columns: minmax(0, 1fr);
+	}
 }
 
 .history-head {
@@ -1539,6 +1585,33 @@ details[open] > .registrations-summary {
 	font-size: 0.75rem;
 }
 
+.mandatory-task-progress {
+	display: flex;
+	align-items: center;
+	justify-self: end;
+	gap: 8px;
+	min-width: 0;
+	max-width: 100%;
+	flex-wrap: wrap;
+}
+
+.mandatory-task-stars {
+	display: flex;
+	flex-wrap: wrap;
+	min-width: 0;
+	max-width: 100%;
+	gap: 2px;
+}
+
+.mandatory-task-stars .star {
+	font-size: 1rem;
+	color: #718096;
+}
+
+.mandatory-task-stars .star.earned {
+	color: #d49b00;
+}
+
 .bonus-compact-points {
 	display: flex;
 	align-items: center;
@@ -1880,6 +1953,14 @@ button:hover {
 	.chart-card {
 		gap: 14px;
 		padding: 16px;
+	}
+
+	.mandatory-compact-top {
+		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.mandatory-task-progress {
+		justify-self: start;
 	}
 
 	.chart-secondary {

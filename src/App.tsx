@@ -479,6 +479,7 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
       bonusPoints,
       penaltyPoints,
       payout: {
+        id: profile.id,
         name: profile.childName,
         fastlønn: outcome.fixedPaid,
         grunnlønn: outcome.basePaid,
@@ -3512,7 +3513,7 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
           {canManageTaskSetup && (
             <div className="task-targets compact-targets">
               <p className="mini">Oppgaven gjelder for:</p>
-              <label className="target-pill">
+              {state.profiles.length > 1 && <label className="target-pill">
                 <input
                   type="checkbox"
                   checked={taskTargetChildIds.length === state.profiles.length}
@@ -3521,7 +3522,7 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
                   }
                 />
                 Alle barn
-              </label>
+              </label>}
               <div className="task-target-list">
                 {state.profiles.map((profile) => (
                   <label key={profile.id} className="target-pill">
@@ -3571,8 +3572,21 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
                   <div className="bonus-compact-content">
                     <div className="mandatory-compact-top">
                       <strong className="bonus-task-name">{task.name}</strong>
-                      <span className="mini">
-                        {completedCount}/{task.requiredCount} ganger · {taskStatus === 'done' ? 'Ferdig' : taskStatus === 'partial' ? 'Påbegynt' : 'Ikke startet'}
+                      <span className="mandatory-task-progress">
+                        <span
+                          className="mandatory-task-stars"
+                          role="img"
+                          aria-label={`${completedCount} av ${task.requiredCount} ganger utført`}
+                        >
+                          {Array.from({ length: task.requiredCount }, (_, index) => (
+                            <span key={index} className={`star ${index < completedCount ? 'earned' : ''}`} aria-hidden="true">
+                              {index < completedCount ? '★' : '☆'}
+                            </span>
+                          ))}
+                        </span>
+                        <span className="mini">
+                          {taskStatus === 'done' ? 'Ferdig' : taskStatus === 'partial' ? 'Påbegynt' : 'Ikke startet'}
+                        </span>
                       </span>
                     </div>
                     <div className="bonus-compact-bottom">
@@ -3610,7 +3624,7 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
             <>
               <div className="task-targets compact-targets">
                 <p className="mini">Oppgaven gjelder for:</p>
-                <label className="target-pill">
+                {state.profiles.length > 1 && <label className="target-pill">
                   <input
                     type="checkbox"
                     checked={taskTargetChildIds.length === state.profiles.length}
@@ -3619,7 +3633,7 @@ function App({ cloud }: { cloud?: CloudContext } = {}) {
                     }
                   />
                   Alle barn
-                </label>
+                </label>}
                 <div className="task-target-list">
                   {state.profiles.map((profile) => (
                     <label key={profile.id} className="target-pill">

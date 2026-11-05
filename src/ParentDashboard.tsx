@@ -26,7 +26,7 @@ type ParentDashboardProps = {
   dashboardChildId: string
   profiles: Array<{ id: string; childName: string }>
   onDashboardChildChange: (childId: string) => void
-  payoutChartData: Array<{ name: string; amount?: number; fastlønn?: number; grunnlønn?: number; bonus?: number; total?: number }>
+  payoutChartData: Array<{ id?: string; name: string; amount?: number; fastlønn?: number; grunnlønn?: number; bonus?: number; total?: number }>
   levelProgressData: Array<{ name: string; na: number; mal: number }>
   mandatoryProgressData: Array<{ name: string; gjort: number; krav: number }>
   bonusContributionData: Array<{ name: string; poeng: number }>
@@ -52,6 +52,13 @@ function ParentDashboard(props: ParentDashboardProps) {
   const hasPayoutData = props.payoutChartData.some((item) =>
     Math.max(item.amount ?? 0, item.fastlønn ?? 0, item.grunnlønn ?? 0, item.bonus ?? 0, item.total ?? 0) > 0,
   )
+  const splitPayoutByChild = props.dashboardChildId === 'all' && props.payoutChartData.length > 1
+  const payoutCharts = splitPayoutByChild
+    ? props.payoutChartData.map((item) => ({ key: item.id ?? item.name, title: item.name, data: [item] }))
+    : [{ key: 'combined', title: '', data: props.payoutChartData }]
+  const payoutAxisMax = Math.max(1, ...props.payoutChartData.map((item) =>
+    Math.max(item.amount ?? 0, item.fastlønn ?? 0, item.grunnlønn ?? 0, item.bonus ?? 0, item.total ?? 0),
+  ))
 
   return (
     <>
@@ -103,25 +110,33 @@ function ParentDashboard(props: ParentDashboardProps) {
           <h2>Utbetalingsprognose</h2>
           <p className="mini">Sammenligner fast lønn, obligatorisk lønn, bonus og total for aktiv periode.</p>
           {hasPayoutData ? (
-            <div className="chart-wrap">
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={props.payoutChartData}>
-                  <CartesianGrid strokeDasharray="4 4" vertical={false} />
-                  <XAxis dataKey="name" />
-                  <YAxis />
-                  <Tooltip />
-                  {props.payoutChartData[0]?.amount !== undefined ? (
-                    <Bar dataKey="amount" fill="#e67e22" radius={[8, 8, 0, 0]} />
-                  ) : (
-                    <>
-                      <Bar dataKey="fastlønn" fill="#5f6caf" name="Fast lønn" radius={[8, 8, 0, 0]} />
-                      <Bar dataKey="grunnlønn" fill="#2a9d8f" name="Obligatorisk lønn" radius={[8, 8, 0, 0]} />
-                      <Bar dataKey="bonus" fill="#f4a261" name="Bonus" radius={[8, 8, 0, 0]} />
-                      <Bar dataKey="total" fill="#264653" name="Total" radius={[8, 8, 0, 0]} />
-                    </>
-                  )}
-                </BarChart>
-              </ResponsiveContainer>
+            <div className={splitPayoutByChild ? 'payout-chart-grid' : undefined}>
+              {payoutCharts.map((chart) => (
+                <div key={chart.key} className={splitPayoutByChild ? 'payout-child-card' : undefined}>
+                  {splitPayoutByChild && <h3>{chart.title}</h3>}
+                  <div className="chart-wrap">
+                    <ResponsiveContainer width="100%" height={250} minWidth={0}>
+                      <BarChart data={chart.data}>
+                        <CartesianGrid strokeDasharray="4 4" vertical={false} />
+                        <XAxis dataKey="name" hide={splitPayoutByChild} />
+                        <YAxis domain={splitPayoutByChild ? [0, payoutAxisMax] : undefined} />
+                        <Tooltip />
+                        <Legend />
+                        {chart.data[0]?.amount !== undefined ? (
+                          <Bar dataKey="amount" fill="#e67e22" name="Utbetaling" radius={[8, 8, 0, 0]} />
+                        ) : (
+                          <>
+                            <Bar dataKey="fastlønn" fill="#5f6caf" name="Fast lønn" radius={[8, 8, 0, 0]} />
+                            <Bar dataKey="grunnlønn" fill="#2a9d8f" name="Obligatorisk lønn" radius={[8, 8, 0, 0]} />
+                            <Bar dataKey="bonus" fill="#f4a261" name="Bonus" radius={[8, 8, 0, 0]} />
+                            <Bar dataKey="total" fill="#264653" name="Total" radius={[8, 8, 0, 0]} />
+                          </>
+                        )}
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              ))}
             </div>
           ) : (
             <p className="chart-empty-state">Ingen opptjening registrert i perioden ennå.</p>

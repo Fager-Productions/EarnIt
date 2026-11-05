@@ -18,11 +18,13 @@ Uten Supabase-konfigurasjon lagres data bare lokalt i nettleseren. Med Supabase 
 - Foreldre kan forhåndsvise barnesiden, men utførte oppgaver registreres bare fra barnets innlogging. Ingen testregistrering i foreldremodus.
 - I foreldrenes forhåndsvisning kan barnet velges ved å trykke på navnet øverst. Barnets egen innlogging har ingen profilvelger.
 - Foreldreoversikten og banken viser alle barn som standard og kan filtreres med barnemenyene. Barnemenyen i innstillingene velger bare hvem lønn og regler redigeres for; den aktiverer eller deaktiverer ikke en konto.
+- Utbetalingsprognosen viser flere barn i hver sin diagramboks, to per rad på brede skjermer og én per rad på mobil. Boksene bruker samme beløpsskala og har fargeforklaring under søylene.
 - Sletting av barn krever at forelderen skriver «slette» i bekreftelsen. Barnets profil og tilhørende data fjernes; dette kan ikke angres i appen.
 - Stotte for flere barn i samme app med egen profil per barn.
 - Velg periode: uke eller maned.
 - Sett fast lønn og lønn for obligatoriske oppgaver per uke eller måned.
 - Definer obligatoriske oppgaver med antall ganger de ma gjores.
+- Ved opprettelse av obligatoriske oppgaver og ekstraoppgaver vises «Alle barn» bare når familien har flere barn. Med ett barn vises bare barnets navn.
 - Obligatoriske oppgaver opprettes øverst i modulen og vises som faste oppgavekort under. Endringer gjøres ved å slette og opprette en ny; registreringer beholdes og kan fjernes under Registreringer.
 - Definer ekstraoppgaver med poengverdi.
 - Obligatoriske oppgaver følger barnets lønnsperiode automatisk. Nye ekstraoppgaver kan gjentas for hver lønnsperiode med avkrysningen «Gjenta hver lønnsperiode»; uten avkrysning utløper oppgaven etter perioden den ble opprettet i. Eldre ekstraoppgaver fortsetter som før. I eksisterende skydatabaser må den nye migrasjonen `202611030001_bonus_task_recurrence.sql` kjøres før engangsoppgaver kan registreres sikkert.
