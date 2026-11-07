@@ -76,7 +76,7 @@ describe('computePeriodOutcome', () => {
     expect(outcome.totalPaid).toBe(0)
   })
 
-  it('pays cumulative reached-level bonuses with the weekly allowance', () => {
+  it('pays only the highest reached bonus level with the weekly allowance', () => {
     const outcome = computePeriodOutcome({
       entries: [
         entry('mandatory', 'm1'),
@@ -99,12 +99,12 @@ describe('computePeriodOutcome', () => {
     expect(outcome.netPoints).toBe(10)
     expect(outcome.reachedLevelName).toBe('Sølv')
     expect(outcome.basePaid).toBe(100)
-    expect(outcome.extraPaid).toBe(35)
-    expect(outcome.totalPaid).toBe(135)
+    expect(outcome.extraPaid).toBe(25)
+    expect(outcome.totalPaid).toBe(125)
     expect(outcome.carryOut).toBe(0)
   })
 
-  it('sums every reached reward level and spends points only through the highest reached threshold', () => {
+  it('pays only the highest reached reward level and spends points through its threshold', () => {
     const outcome = computePeriodOutcome({
       entries: [entry('bonus', 'b1')],
       periodType: 'week',
@@ -118,9 +118,40 @@ describe('computePeriodOutcome', () => {
       penaltyEnabled: false,
       bonusRequiresMandatory: false,
     })
-    expect(outcome.extraPaid).toBe(35)
+    expect(outcome.extraPaid).toBe(25)
     expect(outcome.pointsSpent).toBe(10)
     expect(outcome.carryOut).toBe(5)
+  })
+
+  it('can disable either task mode without losing the other mode or carried points', () => {
+    const common = {
+      entries: [
+        entry('mandatory', 'm1'),
+        entry('mandatory', 'm1'),
+        entry('bonus', 'b1'),
+      ],
+      periodType: 'week' as const,
+      periodKey: '2026-W02',
+      mandatoryTasks,
+      bonusTasks,
+      penaltyTasks,
+      rewardLevels,
+      baseAllowance: 100,
+      fixedAllowance: 20,
+      carryIn: 10,
+      penaltyEnabled: false,
+      bonusRequiresMandatory: true,
+    }
+
+    const bonusOnly = computePeriodOutcome({ ...common, mandatoryTasksEnabled: false })
+    expect(bonusOnly).toMatchObject({
+      mandatoryMet: true, basePaid: 0, extraPaid: 25, fixedPaid: 20,
+    })
+
+    const mandatoryOnly = computePeriodOutcome({ ...common, bonusLevelsEnabled: false })
+    expect(mandatoryOnly).toMatchObject({
+      mandatoryMet: true, basePaid: 100, extraPaid: 0, pointsAvailable: 10, carryOut: 10,
+    })
   })
 
   it('ignores penalty points when penalties are disabled', () => {

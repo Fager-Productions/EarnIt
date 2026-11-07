@@ -53,6 +53,16 @@ test('child registration expires one-period bonus tasks on the server', async ()
   assert.match(migration, /Europe\/Oslo/)
 })
 
+test('child registration enforces the enabled task modes from family state', async () => {
+  const migration = await readFile(
+    new URL('../supabase/migrations/202611070001_task_category_modes.sql', import.meta.url),
+    'utf8',
+  )
+  assert.match(migration, /mandatoryTasksEnabled/)
+  assert.match(migration, /bonusLevelsEnabled/)
+  assert.equal((migration.match(/TASK_CATEGORY_DISABLED/g) ?? []).length, 2)
+})
+
 test('accepts one family and allows adding families later', () => {
   const rows = Array.from({ length: 11 }, (_, index) => ({ email: `parent${index}@pilot-mail.org` }))
   assert.equal(validateFamilies(rows.slice(0, 1)).length, 1)

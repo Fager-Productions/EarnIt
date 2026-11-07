@@ -230,26 +230,26 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
 
   const mandatoryMet = useMemo(
     () =>
-      activeProfile.mandatoryTasks.every(
+      activeProfile.mandatoryTasksEnabled === false || activeProfile.mandatoryTasks.every(
         (task) => (mandatoryCountMap[task.id] ?? 0) >= task.requiredCount,
       ),
-    [activeProfile.mandatoryTasks, mandatoryCountMap],
+    [activeProfile.mandatoryTasksEnabled, activeProfile.mandatoryTasks, mandatoryCountMap],
   )
 
   const bonusPointsThisPeriod = useMemo(
-    () =>
+    () => activeProfile.bonusLevelsEnabled === false ? 0 :
       currentPeriodEntries
         .filter((entry) => entry.taskType === 'bonus')
         .reduce((sum, entry) => {
           const task = activeProfile.bonusTasks.find((item) => item.id === entry.taskId)
           return sum + (entry.points ?? task?.points ?? 0)
         }, 0),
-    [currentPeriodEntries, activeProfile.bonusTasks],
+    [currentPeriodEntries, activeProfile.bonusLevelsEnabled, activeProfile.bonusTasks],
   )
 
   const penaltyPointsThisPeriod = useMemo(
     () => {
-      if (!state.parentSettings.penaltyEnabled) {
+      if (!state.parentSettings.penaltyEnabled || activeProfile.bonusLevelsEnabled === false) {
         return 0
       }
       return currentPeriodEntries
@@ -259,7 +259,7 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
           return sum + (entry.points ?? task?.points ?? 0)
         }, 0)
     },
-    [currentPeriodEntries, activeProfile.penaltyTasks, state.parentSettings.penaltyEnabled],
+    [currentPeriodEntries, activeProfile.bonusLevelsEnabled, activeProfile.penaltyTasks, state.parentSettings.penaltyEnabled],
   )
 
   const netPointsThisPeriod = bonusPointsThisPeriod - penaltyPointsThisPeriod
@@ -274,7 +274,9 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
     return map
   }, [currentPeriodEntries])
 
-  const pointsAvailableNow = Math.max(0, activeProfile.carryPoints + netPointsThisPeriod)
+  const pointsAvailableNow = activeProfile.bonusLevelsEnabled === false
+    ? activeProfile.carryPoints
+    : Math.max(0, activeProfile.carryPoints + netPointsThisPeriod)
 
   const sortedLevels = useMemo(
     () => [...activeProfile.rewardLevels].sort((a, b) => a.minPoints - b.minPoints),
@@ -282,7 +284,9 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
   )
 
   const reachedLevelNow =
-    sortedLevels.filter((level) => level.minPoints <= pointsAvailableNow).at(-1) ?? null
+    activeProfile.bonusLevelsEnabled === false
+      ? null
+      : sortedLevels.filter((level) => level.minPoints <= pointsAvailableNow).at(-1) ?? null
 
   const currentOutcome = computePeriodOutcome({
     ...activeProfile,
@@ -290,15 +294,17 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
     carryIn: activeProfile.carryPoints,
     penaltyEnabled: state.parentSettings.penaltyEnabled,
     bonusRequiresMandatory: state.parentSettings.bonusRequiresMandatory,
+    mandatoryTasksEnabled: activeProfile.mandatoryTasksEnabled !== false,
+    bonusLevelsEnabled: activeProfile.bonusLevelsEnabled !== false,
   })
   const projectedCarryOut = currentOutcome.carryOut
   const projectedTotalAllowance = currentOutcome.totalPaid
 
-  const mandatoryRequiredTotal = activeProfile.mandatoryTasks.reduce(
+  const mandatoryRequiredTotal = activeProfile.mandatoryTasksEnabled === false ? 0 : activeProfile.mandatoryTasks.reduce(
     (sum, task) => sum + task.requiredCount,
     0,
   )
-  const mandatoryDoneTotal = activeProfile.mandatoryTasks.reduce(
+  const mandatoryDoneTotal = activeProfile.mandatoryTasksEnabled === false ? 0 : activeProfile.mandatoryTasks.reduce(
     (sum, task) => sum + Math.min(task.requiredCount, mandatoryCountMap[task.id] ?? 0),
     0,
   )
@@ -307,7 +313,9 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
       ? Math.round((mandatoryDoneTotal / mandatoryRequiredTotal) * 100)
       : 0
 
-  const nextLevel = sortedLevels.find((level) => level.minPoints > pointsAvailableNow) ?? null
+  const nextLevel = activeProfile.bonusLevelsEnabled === false
+    ? null
+    : sortedLevels.find((level) => level.minPoints > pointsAvailableNow) ?? null
   const sortedBonusTasks = useMemo(
     () =>
       [...activeProfile.bonusTasks].sort((a, b) =>
@@ -437,26 +445,37 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
       target.set(entry.taskId, (target.get(entry.taskId) ?? 0) + 1)
     })
 
-    const mandatoryRequiredTotal = profile.mandatoryTasks.reduce((sum, task) => sum + task.requiredCount, 0)
-    const mandatoryDoneTotal = profile.mandatoryTasks.reduce(
+    const mandatoryTasksEnabled = profile.mandatoryTasksEnabled !== false
+    const bonusLevelsEnabled = profile.bonusLevelsEnabled !== false
+    const mandatoryRequiredTotal = mandatoryTasksEnabled
+      ? profile.mandatoryTasks.reduce((sum, task) => sum + task.requiredCount, 0) : 0
+    const mandatoryDoneTotal = mandatoryTasksEnabled ? profile.mandatoryTasks.reduce(
       (sum, task) => sum + Math.min(task.requiredCount, mandatoryCountMap.get(task.id) ?? 0),
       0,
-    )
-    const mandatoryMet = mandatoryDoneTotal >= mandatoryRequiredTotal
-    const bonusPoints = periodEntries.filter(entry => entry.taskType === 'bonus').reduce(
+    ) : 0
+    const mandatoryMet = !mandatoryTasksEnabled || mandatoryDoneTotal >= mandatoryRequiredTotal
+    const bonusPoints = bonusLevelsEnabled ? periodEntries.filter(entry => entry.taskType === 'bonus').reduce(
       (sum, entry) => sum + (entry.points ?? profile.bonusTasks.find(task => task.id === entry.taskId)?.points ?? 0), 0)
-    const penaltyPoints = state.parentSettings.penaltyEnabled
+    : 0
+    const penaltyPoints = bonusLevelsEnabled && state.parentSettings.penaltyEnabled
       ? periodEntries.filter(entry => entry.taskType === 'penalty').reduce(
         (sum, entry) => sum + (entry.points ?? profile.penaltyTasks.find(task => task.id === entry.taskId)?.points ?? 0), 0)
       : 0
-    const pointsAvailable = Math.max(0, profile.carryPoints + bonusPoints - penaltyPoints)
+    const pointsAvailable = bonusLevelsEnabled
+      ? Math.max(0, profile.carryPoints + bonusPoints - penaltyPoints)
+      : profile.carryPoints
     const sortedLevels = [...profile.rewardLevels].sort((a, b) => a.minPoints - b.minPoints)
-    const reachedLevel = sortedLevels.filter((level) => level.minPoints <= pointsAvailable).at(-1) ?? null
-    const nextLevel = sortedLevels.find((level) => level.minPoints > pointsAvailable) ?? null
+    const reachedLevel = bonusLevelsEnabled
+      ? sortedLevels.filter((level) => level.minPoints <= pointsAvailable).at(-1) ?? null : null
+    const nextLevel = bonusLevelsEnabled
+      ? sortedLevels.find((level) => level.minPoints > pointsAvailable) ?? null
+      : null
     const outcome = computePeriodOutcome({
       ...profile, periodKey, carryIn: profile.carryPoints,
       penaltyEnabled: state.parentSettings.penaltyEnabled,
       bonusRequiresMandatory: state.parentSettings.bonusRequiresMandatory,
+      mandatoryTasksEnabled,
+      bonusLevelsEnabled,
     })
     const projectedExtra = outcome.extraPaid
     const projectedTotalAllowance = outcome.totalPaid
@@ -486,19 +505,19 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
         bonus: projectedExtra,
         total: projectedTotalAllowance,
       },
-      mandatory: profile.mandatoryTasks.map((task) => ({
+      mandatory: mandatoryTasksEnabled ? profile.mandatoryTasks.map((task) => ({
         name: task.name,
         gjort: Math.min(task.requiredCount, mandatoryCountMap.get(task.id) ?? 0),
         krav: task.requiredCount,
-      })),
-      bonus: profile.bonusTasks.map((task) => ({
+      })) : [],
+      bonus: bonusLevelsEnabled ? profile.bonusTasks.map((task) => ({
         name: task.name,
         poeng: (bonusCountMap.get(task.id) ?? 0) * task.points,
-      })),
-      penalty: profile.penaltyTasks.map((task) => ({
+      })) : [],
+      penalty: bonusLevelsEnabled && state.parentSettings.penaltyEnabled ? profile.penaltyTasks.map((task) => ({
         name: task.name,
         trekk: (penaltyCountMap.get(task.id) ?? 0) * task.points,
-      })),
+      })) : [],
       settlements: profile.settlements.slice(0, 6).reverse().map((settlement) => ({
         periode: `${profile.childName}: ${settlement.periodLabel}`,
         utbetaling: settlement.totalPaid,
@@ -717,36 +736,40 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
     )
   }, [activeProfile])
 
-  const hasConfiguredLevels = sortedLevels.length > 0
+  const hasConfiguredLevels = activeProfile.bonusLevelsEnabled !== false && sortedLevels.length > 0
   const nextLevelProgressPct = !hasConfiguredLevels
     ? 0
     : nextLevel
       ? Math.min(100, Math.round((pointsAvailableNow / nextLevel.minPoints) * 100))
       : 100
-  const maxExtraAmount = sortedLevels.reduce((sum, level) => sum + level.extraAmount, 0)
+  const maxExtraAmount = activeProfile.bonusLevelsEnabled === false
+    ? 0
+    : sortedLevels.reduce((max, level) => Math.max(max, level.extraAmount), 0)
   const maxPossiblePayout = (activeProfile.fixedAllowance ?? 0) +
-    (activeProfile.mandatoryTasks.length > 0 ? activeProfile.baseAllowance : 0) + maxExtraAmount
+    (activeProfile.mandatoryTasksEnabled !== false && activeProfile.mandatoryTasks.length > 0
+      ? activeProfile.baseAllowance : 0) + maxExtraAmount
   const payoutProgressPct =
     maxPossiblePayout > 0 ? Math.round((projectedTotalAllowance / maxPossiblePayout) * 100) : 0
 
   const earnedStars = Math.min(5, Math.max(0, Math.floor(nextLevelProgressPct / 20)))
-  const mandatoryTaskCompletedCount = activeProfile.mandatoryTasks.filter(
+  const mandatoryTaskCompletedCount = activeProfile.mandatoryTasksEnabled === false ? 0 : activeProfile.mandatoryTasks.filter(
     (task) => (mandatoryCountMap[task.id] ?? 0) >= task.requiredCount,
   ).length
   const childBadges = [
-    {
+    ...(activeProfile.mandatoryTasksEnabled !== false ? [{
       label: 'Oppgavehelt',
       unlocked: activeProfile.mandatoryTasks.length > 0 &&
         mandatoryTaskCompletedCount === activeProfile.mandatoryTasks.length,
       kind: 'mandatory',
-    },
-    {
+    }] : []),
+    ...(activeProfile.bonusLevelsEnabled !== false ? [{
       label: 'Nivåmester',
       unlocked: reachedLevelNow !== null,
       kind: 'level',
-    },
+    }] : []),
   ]
-  const hasCelebration = reachedLevelNow !== null && mandatoryMet
+  const hasCelebration = reachedLevelNow !== null &&
+    (activeProfile.mandatoryTasksEnabled === false || mandatoryMet)
   const adminTempPasswordStrength = getParentPasswordStrengthLabel(newParentAccountPassword)
   const firstLoginPasswordStrength = getParentPasswordStrengthLabel(firstLoginNewPassword)
   const isParentMode = role === 'parent' && isParentUnlocked
@@ -771,6 +794,8 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
         state.parentSettings.penaltyEnabled,
         state.parentSettings.bonusRequiresMandatory,
         now,
+        profile.mandatoryTasksEnabled !== false,
+        profile.bonusLevelsEnabled !== false,
       ), state.parentSettings, now)
 
       if (settledProfile !== profile) {
@@ -918,6 +943,29 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
       profile.id === activeProfile.id ? updater(profile) : profile,
     )
     return persist({ ...state, profiles: nextProfiles })
+  }
+
+  async function updateTaskMode(
+    mode: 'mandatoryTasksEnabled' | 'bonusLevelsEnabled',
+    enabled: boolean,
+  ) {
+    if (!canManage) return
+    const settledProfile = accrueBankInterest(settlePastPeriods(
+      activeProfile,
+      state.parentSettings.interestPeriod,
+      state.parentSettings.penaltyEnabled,
+      state.parentSettings.bonusRequiresMandatory,
+      now,
+      activeProfile.mandatoryTasksEnabled !== false,
+      activeProfile.bonusLevelsEnabled !== false,
+    ), state.parentSettings, now)
+    const updatedProfile = { ...settledProfile, [mode]: enabled }
+    return persist({
+      ...state,
+      profiles: state.profiles.map(profile =>
+        profile.id === activeProfile.id ? updatedProfile : profile,
+      ),
+    })
   }
 
   function updateProfileById(profileId: string, updater: (profile: ChildProfile) => ChildProfile) {
@@ -1649,6 +1697,8 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
     if (!canRegisterTasks) {
       return
     }
+    if (taskType === 'mandatory' && activeProfile.mandatoryTasksEnabled === false) return
+    if (taskType === 'bonus' && activeProfile.bonusLevelsEnabled === false) return
     if (cloud?.role === 'child') {
       if (taskType === 'penalty') return
       if (savingRef.current) return
@@ -2461,6 +2511,7 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
             Se oppgavene mine
           </button>
 
+          {activeProfile.bonusLevelsEnabled !== false && <>
           <div className={`level-celebration ${hasCelebration ? 'is-active' : ''}`}>
             <span className="spark spark-a" />
             <span className="spark spark-b" />
@@ -2475,6 +2526,7 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
               </span>
             ))}
           </div>
+          </>}
 
           <div className="badge-row">
             {childBadges.map((badge) => (
@@ -2488,7 +2540,7 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
           </div>
 
           <div className="ring-grid">
-            <article className="ring-card">
+            {activeProfile.mandatoryTasksEnabled !== false && <article className="ring-card">
               <div
                 className="progress-ring"
                 style={{
@@ -2501,9 +2553,9 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
               <p className="mini">
                 {mandatoryDoneTotal}/{mandatoryRequiredTotal} ferdig
               </p>
-            </article>
+            </article>}
 
-            <article className="ring-card">
+            {activeProfile.bonusLevelsEnabled !== false && <article className="ring-card">
               <div
                 className="progress-ring"
                 style={{
@@ -2520,7 +2572,7 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                     ? 'Fyll ringen for å nå neste nivå.'
                     : 'Du har nådd alle nivåene!'}
               </p>
-            </article>
+            </article>}
 
             <article className="ring-card">
               <div
@@ -2701,10 +2753,32 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                 Barnets innstillinger
               </h3>
               <p className="mini module-subtitle">
-                Lønn per periode = fast lønn + lønn for fullførte obligatoriske oppgaver + bonus.
-                Sett et beløp til 0 for å deaktivere den delen.
+                Velg om dette barnet skal bruke obligatoriske oppgaver, bonuspoeng og bonusnivåer, eller begge deler.
+                Begge oppgavemodulene er på som standard.
               </p>
               <div className="settings-grid">
+                <label className="mini remember-check">
+                  <input
+                    type="checkbox"
+                    checked={activeProfile.mandatoryTasksEnabled !== false}
+                    disabled={!canManage || !hasProfiles}
+                    onChange={(event) => {
+                      void updateTaskMode('mandatoryTasksEnabled', event.target.checked)
+                    }}
+                  />
+                  Bruk obligatoriske oppgaver
+                </label>
+                <label className="mini remember-check">
+                  <input
+                    type="checkbox"
+                    checked={activeProfile.bonusLevelsEnabled !== false}
+                    disabled={!canManage || !hasProfiles}
+                    onChange={(event) => {
+                      void updateTaskMode('bonusLevelsEnabled', event.target.checked)
+                    }}
+                  />
+                  Bruk bonuspoeng og bonusnivåer
+                </label>
                 {!hasProfiles && (
                   <div className="period-chip">Ingen barn er opprettet ennå. Legg til et barn i modulen over.</div>
                 )}
@@ -2836,7 +2910,8 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                 </div>
               </div>
               <p className="mini">
-                Perioder avsluttes automatisk etter periodeskiftet, også uten registreringer.
+                Begge oppgavemodulene er på som standard. Når du endrer en av/på-innstilling, avsluttes eventuelle tidligere perioder først.
+                Perioder avsluttes ellers automatisk etter periodeskiftet, også uten registreringer.
                 Nye lønnsbeløp gjelder den åpne perioden; avsluttet historikk endres ikke.
               </p>
             </section>
@@ -2846,7 +2921,7 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                 <span className="module-glyph" aria-hidden="true">N</span>
                 Bonusnivåer
               </h3>
-              <p className="mini module-subtitle">Legg til nivåer som gir ekstra lønn når barnet får nok poeng.</p>
+              <p className="mini module-subtitle">Legg til nivåer som gir ekstra lønn når barnet får nok poeng. Bare høyeste oppnådde nivå utbetales.</p>
               <ul className="task-list">
                 {sortedLevels.map((level) => (
                   <li key={level.id}>
@@ -3063,6 +3138,20 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
               <p className="mini">
                 Når dette er av, kan opparbeidede bonuspoeng fortsatt gi bonus selv om obligatoriske oppgaver mangler.
               </p>
+              <label className="mini remember-check">
+                <input
+                  type="checkbox"
+                  checked={state.parentSettings.showSharedTaskClaimant !== false}
+                  onChange={(event) => persist({
+                    ...state,
+                    parentSettings: {
+                      ...state.parentSettings,
+                      showSharedTaskClaimant: event.target.checked,
+                    },
+                  })}
+                />
+                Vis hvem som tok Up for grabs-oppgaver i barnemodus
+              </label>
               <h4>Regler for poengtrekk</h4>
               <label>
                 Rediger regler for
@@ -3130,12 +3219,17 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
               <p className="mini module-subtitle">Kort guide til hvordan du bruker appen.</p>
               <ol className="mini">
                 <li>Legg til barn og velg barnet du vil redigere lønn og periode for.</li>
-                <li>Opprett oppgaver som barn kan gjøre for poeng eller penger. Bruk avkrysningene for å velge hvilke barn oppgaven gjelder for.</li>
+                <li>Velg under Barnets innstillinger om barnet skal bruke obligatoriske oppgaver, bonuspoeng og bonusnivåer, eller begge deler. Opprett deretter oppgavene som skal brukes.</li>
+                <li>Bonusnivåer legger seg ikke sammen: barnet får bare beløpet på det høyeste nivået det når.</li>
                 <li>Barn registrerer utførte oppgaver fra sin egen innlogging. Foreldre følger registreringene under Registreringer.</li>
+                <li>Obligatoriske oppgaver har én stjerne per gang oppgaven skal gjøres i perioden. Tomme stjerner viser hva som gjenstår; gullstjerner viser utførte ganger. Kortet er hvitt før start, gult når oppgaven er påbegynt og grønt når alle stjernene er fylt.</li>
+                <li>Feilregistreringer i den aktive perioden kan fjernes under Registreringer eller barnets Mine registreringer. Stjerner, poeng og lønnsprognose oppdateres. Bare foreldre kan angre poengtrekk.</li>
+                <li>Barn ser bare sine tildelte oppgaver. Up for grabs-oppgaver kan tas én gang på tvers av barna de gjelder for. Under Regler velger forelderen om barn skal se hvem som tok oppgaven; når navn skjules, vises fortsatt at oppgaven er tatt.</li>
                 <li>Forhåndsvis barnesiden viser ekte data, men lar deg ikke registrere oppgaver som forelder.</li>
                 <li>Lag regler for poengtrekk under Regler. Barnet ser dem under Hva kan gi poengtrekk? Ingen poeng trekkes når en regel opprettes; først når forelderen trykker Utfør trekk.</li>
                 <li>Oppgaver oppdaterer lønnsprognosen. Lønn føres i banken når perioden avsluttes.</li>
-                <li>Bruk regler for obligatoriske oppgaver, bonusnivåer, renter og trekk for å tilpasse appen.</li>
+                <li>Bruk regler for renter og trekk. Under Barnets innstillinger kan du slå obligatoriske oppgaver og bonuspoeng/-nivåer av eller på separat for hvert barn.</li>
+                <li>Bonusnivåer ligger under Barnets innstillinger og gjelder barnet valgt der.</li>
                 <li>Se oversikt, banken og historikk for å følge utviklingen over tid.</li>
               </ol>
             </section>
@@ -3231,26 +3325,26 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
             <p>Opparbeidet ukelønn nå</p>
             <strong>{!isChildMode ? dashboardProjectedTotalAllowance : projectedTotalAllowance} kr</strong>
           </article>
-          <article className="summary-panel-item">
+          {(!isChildMode || activeProfile.mandatoryTasksEnabled !== false) && <article className="summary-panel-item">
             <p>Obligatoriske oppgaver</p>
             <strong>{!isChildMode
               ? (dashboardMandatoryMet ? 'Krav oppfylt' : 'Krav ikke oppfylt')
               : (mandatoryMet ? 'Krav oppfylt' : 'Krav ikke oppfylt')}</strong>
-          </article>
-          <article className="summary-panel-item">
+          </article>}
+          {(!isChildMode || activeProfile.bonusLevelsEnabled !== false) && <article className="summary-panel-item">
             <p>Opptjente poeng</p>
             <strong>{!isChildMode ? dashboardBonusPoints : bonusPointsThisPeriod} poeng</strong>
-          </article>
-          {state.parentSettings.penaltyEnabled && (
+          </article>}
+          {state.parentSettings.penaltyEnabled && (!isChildMode || activeProfile.bonusLevelsEnabled !== false) && (
             <article className="summary-panel-item">
               <p>Poengtrekk</p>
               <strong>-{!isChildMode ? dashboardPenaltyPoints : penaltyPointsThisPeriod} poeng</strong>
             </article>
           )}
-          <article className="summary-panel-item">
+          {(!isChildMode || activeProfile.bonusLevelsEnabled !== false) && <article className="summary-panel-item">
             <p>Netto poeng denne perioden</p>
             <strong>{!isChildMode ? dashboardNetPoints : netPointsThisPeriod} poeng</strong>
-          </article>
+          </article>}
           {!isChildMode && (
             <article className="summary-panel-item compact-panel-item">
               <p>Rentekonto saldo</p>
@@ -3282,9 +3376,11 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
         <p className="summary-line">
           Nivå nå: <strong>{!isChildMode
             ? (dashboardIsAll ? 'Flere nivåer' : dashboardSelected?.reachedLevelName ?? 'Ingen nivå ennå')
-            : (reachedLevelNow?.name ?? 'Ingen nivå ennå')}</strong>. Poeng som blir
-          med videre: <strong>{!isChildMode ? dashboardProjectedCarryOut : projectedCarryOut}</strong>. Overført inn i perioden:{' '}
-          <strong>{!isChildMode ? dashboardSelection.reduce((sum, item) => sum + item.profile.carryPoints, 0) : activeProfile.carryPoints}</strong>.
+            : (activeProfile.bonusLevelsEnabled === false ? 'Av' : reachedLevelNow?.name ?? 'Ingen nivå ennå')}</strong>
+          {(!isChildMode || activeProfile.bonusLevelsEnabled !== false) && <>. Poeng som blir
+            med videre: <strong>{!isChildMode ? dashboardProjectedCarryOut : projectedCarryOut}</strong>. Overført inn i perioden:{' '}
+            <strong>{!isChildMode ? dashboardSelection.reduce((sum, item) => sum + item.profile.carryPoints, 0) : activeProfile.carryPoints}</strong>.
+          </>}
         </p>
         {!isChildMode && <p className="summary-line summary-secondary">Trend: <strong>{payoutTrendLabel}</strong>.</p>}
         {!isChildMode && <p className="summary-line summary-secondary">
@@ -3515,8 +3611,18 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
             </p>
           </div>
         )}
+        {isChildMode && activeProfile.mandatoryTasksEnabled === false &&
+          activeProfile.bonusLevelsEnabled === false && (
+            <div className="card chart-span-2">
+              <p className="mini">Forelderen har slått av både obligatoriske oppgaver og bonusnivåer.</p>
+            </div>
+          )}
+        {(!isChildMode || activeProfile.mandatoryTasksEnabled !== false) && (
         <div className="card">
           <h2>Obligatoriske oppgaver</h2>
+          {canManageTaskSetup && activeProfile.mandatoryTasksEnabled === false && (
+            <p className="mini">Obligatoriske oppgaver er slått av for dette barnet. Slå dem på under Barnets innstillinger for å aktivere dem.</p>
+          )}
           {canManageTaskSetup && (
             <div className="task-targets compact-targets">
               <p className="mini">Oppgaven gjelder for:</p>
@@ -3597,9 +3703,9 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                       </span>
                     </div>
                     <div className="bonus-compact-bottom">
-                      <p className="mini task-applies-to">
+                      {!isChildMode && <p className="mini task-applies-to">
                         {getChildrenForTask('mandatory', task.name, task.requiredCount).join(', ') || 'Ingen'}
-                      </p>
+                      </p>}
                       {canRegisterTasks && (
                         <button
                           type="button"
@@ -3623,9 +3729,14 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
             })}
           </ul>
         </div>
+        )}
 
+        {(!isChildMode || activeProfile.bonusLevelsEnabled !== false) && (
         <div className="card">
           <h2>Ekstraoppgaver og poeng</h2>
+          {canManageTaskSetup && activeProfile.bonusLevelsEnabled === false && (
+            <p className="mini">Bonuspoeng og bonusnivåer er slått av for dette barnet. Slå dem på under Barnets innstillinger for å aktivere dem.</p>
+          )}
 
           {canManageTaskSetup && (
             <>
@@ -3744,7 +3855,7 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                   </li>
                   )
                 })
-              : sharedBonusTasks.map((task) => {
+              : sharedBonusTasks.filter(task => !isChildMode || activeProfileBonusTaskByKey.has(task.key)).map((task) => {
                   const alreadyTaken = task.upForGrabs
                     ? (sharedBonusCountByTaskKey.get(task.key) ?? 0) > 0
                     : (bonusCountMap[activeProfileBonusTaskByKey.get(task.key)?.id ?? ''] ?? 0) > 0
@@ -3764,7 +3875,9 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                           <span className="mini bonus-registered">
                             {alreadyTaken
                               ? task.upForGrabs
-                                ? `Tatt av ${takenByChild ?? 'noen'}`
+                                ? state.parentSettings.showSharedTaskClaimant !== false
+                                  ? `Tatt av ${takenByChild || 'noen'}`
+                                  : 'Tatt denne perioden'
                                 : 'Gjort denne perioden'
                               : 'Ikke tatt ennå'}
                           </span>
@@ -3774,15 +3887,17 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                             </button>
                           )}
                         </div>
-                        <p className="mini task-applies-to">
+                        {!isChildMode && <p className="mini task-applies-to">
                           {task.upForGrabs ? 'Up for grabs. ' : ''}Gjelder for: {task.childNames.join(', ')}
-                        </p>
+                        </p>}
+                        {isChildMode && task.upForGrabs && <p className="mini">Up for grabs</p>}
                       </div>
                     </li>
                   )
                 })}
           </ul>
         </div>
+        )}
           {state.parentSettings.penaltyEnabled && (
             <section className="card penalty-section chart-span-2">
               <h2>Poengtrekk</h2>

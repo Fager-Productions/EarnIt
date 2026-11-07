@@ -98,6 +98,8 @@ export type ChildProfile = {
   childPinSalt: string | null
   childPinIterations: number
   childPinPlain: string | null
+  mandatoryTasksEnabled?: boolean
+  bonusLevelsEnabled?: boolean
   mandatoryTasks: MandatoryTask[]
   bonusTasks: BonusTask[]
   penaltyTasks: PenaltyTask[]
@@ -120,6 +122,7 @@ export type ParentSettings = {
   childPinIterations: number
   penaltyEnabled: boolean
   bonusRequiresMandatory: boolean
+  showSharedTaskClaimant?: boolean
   interestRatePct: number
   interestPeriod: InterestPeriod
   parentAccounts: ParentAccount[]

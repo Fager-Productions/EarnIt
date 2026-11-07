@@ -29,6 +29,8 @@ export type PeriodOutcomeInput = {
   carryIn: number
   penaltyEnabled: boolean
   bonusRequiresMandatory?: boolean
+  mandatoryTasksEnabled?: boolean
+  bonusLevelsEnabled?: boolean
 }
 
 export type PeriodOutcome = {
@@ -59,18 +61,20 @@ export function computePeriodOutcome(input: PeriodOutcomeInput): PeriodOutcome {
       mandatoryCountMap[entry.taskId] = (mandatoryCountMap[entry.taskId] ?? 0) + 1
     })
 
-  const mandatoryMet = input.mandatoryTasks.every(
+  const mandatoryTasksEnabled = input.mandatoryTasksEnabled !== false
+  const bonusLevelsEnabled = input.bonusLevelsEnabled !== false
+  const mandatoryMet = !mandatoryTasksEnabled || input.mandatoryTasks.every(
     (task) => (mandatoryCountMap[task.id] ?? 0) >= task.requiredCount,
   )
 
-  const bonusPoints = periodEntries
+  const bonusPoints = bonusLevelsEnabled ? periodEntries
     .filter((entry) => entry.taskType === 'bonus')
     .reduce((sum, entry) => {
       const task = input.bonusTasks.find((item) => item.id === entry.taskId)
       return sum + (entry.points ?? task?.points ?? 0)
-    }, 0)
+    }, 0) : 0
 
-  const penaltyPoints = input.penaltyEnabled
+  const penaltyPoints = bonusLevelsEnabled && input.penaltyEnabled
     ? periodEntries
         .filter((entry) => entry.taskType === 'penalty')
         .reduce((sum, entry) => {
@@ -80,19 +84,17 @@ export function computePeriodOutcome(input: PeriodOutcomeInput): PeriodOutcome {
     : 0
 
   const netPoints = bonusPoints - penaltyPoints
-  const pointsAvailable = Math.max(0, input.carryIn + netPoints)
+  const pointsAvailable = bonusLevelsEnabled ? Math.max(0, input.carryIn + netPoints) : input.carryIn
 
   const sortedLevels = [...input.rewardLevels].sort((a, b) => a.minPoints - b.minPoints)
   const reachedLevels = sortedLevels.filter((level) => level.minPoints <= pointsAvailable)
-  const reachedLevel = reachedLevels.at(-1) ?? null
+  const reachedLevel = bonusLevelsEnabled ? reachedLevels.at(-1) ?? null : null
 
   const bonusCanApply = !input.bonusRequiresMandatory || mandatoryMet
-  const extraPaid = bonusCanApply
-    ? reachedLevels.reduce((sum, level) => sum + level.extraAmount, 0)
-    : 0
-  const pointsSpent = bonusCanApply ? (reachedLevel?.minPoints ?? 0) : 0
-  const carryOut = bonusCanApply ? Math.max(0, pointsAvailable - pointsSpent) : pointsAvailable
-  const basePaid = mandatoryMet && input.mandatoryTasks.length > 0 ? input.baseAllowance : 0
+  const extraPaid = bonusLevelsEnabled && bonusCanApply ? (reachedLevel?.extraAmount ?? 0) : 0
+  const pointsSpent = bonusLevelsEnabled && bonusCanApply ? (reachedLevel?.minPoints ?? 0) : 0
+  const carryOut = bonusLevelsEnabled && bonusCanApply ? Math.max(0, pointsAvailable - pointsSpent) : pointsAvailable
+  const basePaid = mandatoryTasksEnabled && mandatoryMet && input.mandatoryTasks.length > 0 ? input.baseAllowance : 0
   const fixedPaid = input.fixedAllowance ?? 0
 
   return {
@@ -115,6 +117,8 @@ export function settlePastPeriods(
   penaltyEnabled: boolean,
   bonusRequiresMandatory: boolean,
   now = new Date(),
+  mandatoryTasksEnabled = true,
+  bonusLevelsEnabled = true,
 ): ChildProfile {
   const currentPeriodKey = getPeriodKey(now, profile.periodType)
   const settledKeys = new Set(
@@ -166,6 +170,8 @@ export function settlePastPeriods(
       carryIn,
       penaltyEnabled,
       bonusRequiresMandatory,
+      mandatoryTasksEnabled,
+      bonusLevelsEnabled,
     })
 
     carryIn = outcome.carryOut

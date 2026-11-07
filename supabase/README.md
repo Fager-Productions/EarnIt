@@ -23,6 +23,13 @@ server/timezone implementation.
    For an existing project, also apply the incremental
    `migrations/202611030001_bonus_task_recurrence.sql` migration in the SQL
    editor (or with `supabase db push`) to enforce one-period bonus-task expiry.
+   Also apply `migrations/202611050001_shared_task_claimant_visibility.sql`
+   so children do not receive other children's claimant names when the family
+   disables claimant visibility. Claim availability remains visible; parent
+   responses and existing task registration rules are unchanged.
+   Apply `migrations/202611070001_task_category_modes.sql` to enforce per-child
+   mandatory/bonus mode switches when children register tasks. Existing profiles
+   default both modes to enabled.
 2. Enable email/password Auth; disable public signup. Configure reliable SMTP and
    email recovery templates. Set Auth Site URL to the app HTTPS origin and allow
    the exact app URL under redirect URLs (plus localhost only for development).

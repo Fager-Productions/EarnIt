@@ -2184,7 +2184,9 @@ button:hover {
 
 	.child-header .child-name-box {
 		flex: 0 1 auto;
-		width: 100%;
+		align-self: flex-start;
+		width: fit-content;
+		max-width: 100%;
 		padding: 8px 12px;
 	}
 
