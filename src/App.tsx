@@ -424,6 +424,99 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
     return map
   }, [sharedBonusEntriesThisPeriod])
 
+  const managedMandatoryTasks = useMemo(() => {
+    const taskMap = new Map<string, {
+      key: string
+      name: string
+      requiredCount: number
+      assignments: Array<{
+        profileId: string
+        childName: string
+        taskId: string
+        completedCount: number
+      }>
+    }>()
+
+    state.profiles.forEach((profile) => {
+      const periodKey = getPeriodKey(now, profile.periodType)
+      profile.mandatoryTasks.forEach((task) => {
+        const key = JSON.stringify([task.name.trim().toLocaleLowerCase('nb-NO'), task.requiredCount])
+        const existing = taskMap.get(key) ?? {
+          key,
+          name: task.name,
+          requiredCount: task.requiredCount,
+          assignments: [],
+        }
+        existing.assignments.push({
+          profileId: profile.id,
+          childName: profile.childName,
+          taskId: task.id,
+          completedCount: profile.entries.filter((entry) =>
+            entry.taskType === 'mandatory' && entry.taskId === task.id &&
+            isEntryInCurrentPeriod(entry, profile.periodType, periodKey),
+          ).length,
+        })
+        taskMap.set(key, existing)
+      })
+    })
+
+    return Array.from(taskMap.values()).sort((a, b) =>
+      a.name.localeCompare(b.name, 'nb-NO', { sensitivity: 'base' }),
+    )
+  }, [state.profiles, now])
+
+  const managedBonusTasks = useMemo(() => {
+    const taskMap = new Map<string, {
+      key: string
+      name: string
+      points: number
+      upForGrabs: boolean
+      repeatEachPeriod?: boolean
+      assignments: Array<{
+        profileId: string
+        childName: string
+        taskId: string
+        available: boolean
+        completed: boolean
+        takenByChild?: string
+      }>
+    }>()
+
+    state.profiles.forEach((profile) => {
+      const periodKey = getPeriodKey(now, profile.periodType)
+      profile.bonusTasks.forEach((task) => {
+        const sharedTaskKey = getBonusTaskKey(task.name, task.points)
+        const key = JSON.stringify([sharedTaskKey, task.upForGrabs, task.repeatEachPeriod ?? true])
+        const existing = taskMap.get(key) ?? {
+          key,
+          name: task.name,
+          points: task.points,
+          upForGrabs: task.upForGrabs,
+          repeatEachPeriod: task.repeatEachPeriod,
+          assignments: [],
+        }
+        const periodEntries = profile.entries.filter((entry) =>
+          entry.taskType === 'bonus' && isEntryInCurrentPeriod(entry, profile.periodType, periodKey),
+        )
+        existing.assignments.push({
+          profileId: profile.id,
+          childName: profile.childName,
+          taskId: task.id,
+          available: isBonusTaskAvailableInPeriod(task, periodKey),
+          completed: task.upForGrabs
+            ? (sharedBonusCountByTaskKey.get(sharedTaskKey) ?? 0) > 0
+            : periodEntries.some((entry) => entry.taskId === task.id),
+          takenByChild: task.upForGrabs ? bonusTakenByChildByTaskKey.get(sharedTaskKey) : undefined,
+        })
+        taskMap.set(key, existing)
+      })
+    })
+
+    return Array.from(taskMap.values()).sort((a, b) =>
+      a.name.localeCompare(b.name, 'nb-NO', { sensitivity: 'base' }),
+    )
+  }, [state.profiles, now, sharedBonusCountByTaskKey, bonusTakenByChildByTaskKey])
+
   const childPinConfigured =
     Boolean(CHILD_AUTH_ENDPOINT) ||
     state.profiles.some((profile) => Boolean(profile.childPinHash && profile.childPinSalt))
@@ -2003,16 +2096,6 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
     }))
   }
 
-  function removeBonusTask(taskId: string) {
-    if (!canManage) {
-      return
-    }
-    updateActiveProfile((profile) => ({
-      ...profile,
-      bonusTasks: profile.bonusTasks.filter((task) => task.id !== taskId),
-    }))
-  }
-
   function removeLevel(levelId: string) {
     if (!canManage) {
       return
@@ -2753,8 +2836,8 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                 Barnets innstillinger
               </h3>
               <p className="mini module-subtitle">
-                Velg om dette barnet skal bruke obligatoriske oppgaver, bonuspoeng og bonusnivåer, eller begge deler.
-                Begge oppgavemodulene er på som standard.
+                Oppgavemodulene kan brukes hver for seg. Slå av obligatoriske oppgaver hvis barnet bare skal ha bonusoppgaver.
+                Begge modulene er på som standard.
               </p>
               <div className="settings-grid">
                 <label className="mini remember-check">
@@ -2777,7 +2860,7 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                       void updateTaskMode('bonusLevelsEnabled', event.target.checked)
                     }}
                   />
-                  Bruk bonuspoeng og bonusnivåer
+                  Bruk bonusoppgaver, bonuspoeng og bonusnivåer
                 </label>
                 {!hasProfiles && (
                   <div className="period-chip">Ingen barn er opprettet ennå. Legg til et barn i modulen over.</div>
@@ -2884,7 +2967,6 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
 
                 <label>
                   Periode
-                  <p className="mini">Velg om barnet får ukelønn eller månedslønn.</p>
                   <select
                     value={hasProfiles ? activeProfile.periodType : 'week'}
                     disabled={!hasProfiles}
@@ -2903,6 +2985,7 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                     <option value="week">Uke</option>
                     <option value="month">Måned</option>
                   </select>
+                  <span className="mini">Velg om barnet får ukelønn eller månedslønn.</span>
                 </label>
 
                 <div className="period-chip">
@@ -2921,7 +3004,23 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                 <span className="module-glyph" aria-hidden="true">N</span>
                 Bonusnivåer
               </h3>
-              <p className="mini module-subtitle">Legg til nivåer som gir ekstra lønn når barnet får nok poeng. Bare høyeste oppnådde nivå utbetales.</p>
+              <p className="mini module-subtitle">Legg til nivåer som gir ekstra lønn når barnet får nok poeng. Bare høyeste oppnådde nivå utbetales, og overskytende poeng blir med videre til neste lønnsperiode.</p>
+              {canManageTaskSetup && (
+                <label className="bonus-level-child-selector">
+                  Rediger bonusnivåer for
+                  <select
+                    value={hasProfiles ? activeProfile.id : ''}
+                    disabled={!hasProfiles}
+                    onChange={(event) => {
+                      void persist({ ...state, activeChildId: event.target.value })
+                    }}
+                  >
+                    {state.profiles.map((profile) => (
+                      <option key={profile.id} value={profile.id}>{profile.childName}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <ul className="task-list">
                 {sortedLevels.map((level) => (
                   <li key={level.id}>
@@ -3008,7 +3107,7 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
               )}
             </section>
 
-            <section className="settings-module module-security">
+            {(cloud || isParentAdminSession) && <section className="settings-module module-security">
               <h3>
                 <span className="module-glyph" aria-hidden="true">A</span>
                 Foreldre
@@ -3027,7 +3126,7 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                     Bytt sky-passord
                   </button>
                 </>
-              ) : isParentAdminSession ? (
+              ) : (
                 <>
                   <form className="inline-form" onSubmit={createParentAccessAccount}>
                     <input
@@ -3062,10 +3161,6 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                     Krav: minst 8 tegn, minst ett tall og minst ett spesialtegn.
                   </p>
                 </>
-              ) : (
-                <p className="mini">
-                  Du er logget inn som foreldrekonto. Kun admin kan opprette nye foreldrekontoer.
-                </p>
               )}
 
               <p className="mini">
@@ -3080,22 +3175,7 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                   ))}
                 </ul>
               )}
-            </section>
-
-            <section className="settings-module module-security">
-              <h3>
-                <span className="module-glyph" aria-hidden="true">S</span>
-                Sikkerhet
-              </h3>
-              <p className="mini module-subtitle">Tips for trygg og sikker bruk av appen.</p>
-
-              {hasProfiles && isDefaultChildName(activeProfile.childName) && (
-                <p className="mini">
-                  Tips: Endre "{DEFAULT_CHILD_NAME}" til faktisk barnenavn i modulen "Barnets profil og kode".
-                </p>
-              )}
-              <p className="mini">Navn og barnekode administreres nå i modulen "Barnets profil og kode".</p>
-            </section>
+            </section>}
 
             <section className="settings-module module-rules">
               <h3>
@@ -3165,6 +3245,26 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                   ))}
                 </select>
               </label>
+              <form className="inline-form" onSubmit={addPenaltyTask}>
+                <input
+                  aria-label="Ny regel for poengtrekk"
+                  placeholder="Hva gir poengtrekk?"
+                  required
+                  disabled={!hasProfiles}
+                  value={newPenaltyName}
+                  onChange={(event) => setNewPenaltyName(event.target.value)}
+                />
+                <input
+                  aria-label="Antall trekkpoeng"
+                  type="number"
+                  min={1}
+                  step={1}
+                  disabled={!hasProfiles}
+                  value={newPenaltyPoints}
+                  onChange={(event) => setNewPenaltyPoints(Math.max(1, Math.floor(safeNumber(event.target.value, 1))))}
+                />
+                <button type="submit" disabled={!hasProfiles}>Legg til regel</button>
+              </form>
               <ul className="task-list">
                 {activeProfile.penaltyTasks.map((task) => (
                   <li key={task.id}>
@@ -3189,26 +3289,6 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                 ))}
                 {activeProfile.penaltyTasks.length === 0 && <li>Ingen regler for poengtrekk ennå.</li>}
               </ul>
-              <form className="inline-form" onSubmit={addPenaltyTask}>
-                <input
-                  aria-label="Ny regel for poengtrekk"
-                  placeholder="Hva gir poengtrekk?"
-                  required
-                  disabled={!hasProfiles}
-                  value={newPenaltyName}
-                  onChange={(event) => setNewPenaltyName(event.target.value)}
-                />
-                <input
-                  aria-label="Antall trekkpoeng"
-                  type="number"
-                  min={1}
-                  step={1}
-                  disabled={!hasProfiles}
-                  value={newPenaltyPoints}
-                  onChange={(event) => setNewPenaltyPoints(Math.max(1, Math.floor(safeNumber(event.target.value, 1))))}
-                />
-                <button type="submit" disabled={!hasProfiles}>Legg til regel</button>
-              </form>
             </section>
 
             <section className="settings-module module-help">
@@ -3219,17 +3299,18 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
               <p className="mini module-subtitle">Kort guide til hvordan du bruker appen.</p>
               <ol className="mini">
                 <li>Legg til barn og velg barnet du vil redigere lønn og periode for.</li>
-                <li>Velg under Barnets innstillinger om barnet skal bruke obligatoriske oppgaver, bonuspoeng og bonusnivåer, eller begge deler. Opprett deretter oppgavene som skal brukes.</li>
-                <li>Bonusnivåer legger seg ikke sammen: barnet får bare beløpet på det høyeste nivået det når.</li>
+                <li>Velg under Barnets innstillinger om barnet skal bruke obligatoriske oppgaver, bonusoppgaver med poeng og nivåer, eller begge deler. Modulene kan brukes hver for seg, så barnet kan ha bare bonusoppgaver.</li>
+                <li>Bonusnivåer legger seg ikke sammen: barnet får bare beløpet på det høyeste nivået det når. Bonuspoeng til overs etter nivåutbetalingen blir med videre til neste uke eller måned.</li>
                 <li>Barn registrerer utførte oppgaver fra sin egen innlogging. Foreldre følger registreringene under Registreringer.</li>
                 <li>Obligatoriske oppgaver har én stjerne per gang oppgaven skal gjøres i perioden. Tomme stjerner viser hva som gjenstår; gullstjerner viser utførte ganger. Kortet er hvitt før start, gult når oppgaven er påbegynt og grønt når alle stjernene er fylt.</li>
+                <li>Under Oppgaver ser forelderen samlet hvilke obligatoriske oppgaver og ekstraoppgaver hvert barn har, og fremdriften deres i den aktive perioden. Oppgavene kan slettes for ett barn om gangen.</li>
                 <li>Feilregistreringer i den aktive perioden kan fjernes under Registreringer eller barnets Mine registreringer. Stjerner, poeng og lønnsprognose oppdateres. Bare foreldre kan angre poengtrekk.</li>
                 <li>Barn ser bare sine tildelte oppgaver. Up for grabs-oppgaver kan tas én gang på tvers av barna de gjelder for. Under Regler velger forelderen om barn skal se hvem som tok oppgaven; når navn skjules, vises fortsatt at oppgaven er tatt.</li>
                 <li>Forhåndsvis barnesiden viser ekte data, men lar deg ikke registrere oppgaver som forelder.</li>
                 <li>Lag regler for poengtrekk under Regler. Barnet ser dem under Hva kan gi poengtrekk? Ingen poeng trekkes når en regel opprettes; først når forelderen trykker Utfør trekk.</li>
                 <li>Oppgaver oppdaterer lønnsprognosen. Lønn føres i banken når perioden avsluttes.</li>
                 <li>Bruk regler for renter og trekk. Under Barnets innstillinger kan du slå obligatoriske oppgaver og bonuspoeng/-nivåer av eller på separat for hvert barn.</li>
-                <li>Bonusnivåer ligger under Barnets innstillinger og gjelder barnet valgt der.</li>
+                <li>Bonusnivåer ligger under Barnets innstillinger. Velg barn i Bonusnivåer-modulen; nivåene du oppretter gjelder bare dette barnet.</li>
                 <li>Se oversikt, banken og historikk for å følge utviklingen over tid.</li>
               </ol>
             </section>
@@ -3677,7 +3758,57 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
             </form>
           )}
           <ul className="task-list">
-            {activeProfile.mandatoryTasks.map((task) => {
+            {canManageTaskSetup
+              ? managedMandatoryTasks.map((task) => (
+                <li key={task.key} className="bonus-compact-task">
+                  <div className="bonus-compact-content">
+                    <div className="bonus-compact-top">
+                      <strong className="bonus-task-name">{task.name}</strong>
+                      <span className="mini">{task.requiredCount} ganger per periode</span>
+                    </div>
+                    <ul className="task-assignment-list">
+                      {task.assignments.map((assignment) => {
+                        const completedCount = Math.min(task.requiredCount, assignment.completedCount)
+                        const taskStatus = completedCount >= task.requiredCount
+                          ? 'done' : completedCount > 0 ? 'partial' : 'new'
+                        return (
+                          <li key={`${assignment.profileId}:${assignment.taskId}`} className={`task-assignment task-status-${taskStatus}`}>
+                            <strong>{assignment.childName}</strong>
+                            <span className="mandatory-task-progress">
+                              <span
+                                className="mandatory-task-stars"
+                                role="img"
+                                aria-label={`${completedCount} av ${task.requiredCount} ganger utført`}
+                              >
+                                {Array.from({ length: task.requiredCount }, (_, index) => (
+                                  <span key={index} className={`star ${index < completedCount ? 'earned' : ''}`} aria-hidden="true">
+                                    {index < completedCount ? '★' : '☆'}
+                                  </span>
+                                ))}
+                              </span>
+                              <span className="mini">
+                                {completedCount}/{task.requiredCount} · {taskStatus === 'done'
+                                  ? 'Ferdig' : taskStatus === 'partial' ? 'Påbegynt' : 'Ikke startet'}
+                              </span>
+                            </span>
+                            <button
+                              type="button"
+                              className="danger"
+                              onClick={() => updateProfileById(assignment.profileId, (profile) => ({
+                                ...profile,
+                                mandatoryTasks: profile.mandatoryTasks.filter((item) => item.id !== assignment.taskId),
+                              }))}
+                            >
+                              Slett
+                            </button>
+                          </li>
+                        )
+                      })}
+                    </ul>
+                  </div>
+                </li>
+              ))
+              : activeProfile.mandatoryTasks.map((task) => {
               const completedCount = mandatoryCountMap[task.id] ?? 0
               const taskStatus = completedCount >= task.requiredCount ? 'done' : completedCount > 0 ? 'partial' : 'new'
               return (
@@ -3728,6 +3859,9 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
               )
             })}
           </ul>
+          {canManageTaskSetup && managedMandatoryTasks.length === 0 && (
+            <p className="mini">Ingen obligatoriske oppgaver er lagt til ennå.</p>
+          )}
         </div>
         )}
 
@@ -3809,52 +3943,42 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
 
           <ul className="task-list">
             {canManageTaskSetup
-              ? sortedBonusTasks.map((task) => {
-                  const taskKey = getBonusTaskKey(task.name, task.points)
-                  const taskAvailableThisPeriod = isBonusTaskAvailableInPeriod(
-                    task, currentPeriodKey,
-                  )
-                  const alreadyTaken = task.upForGrabs
-                    ? (sharedBonusCountByTaskKey.get(taskKey) ?? 0) > 0
-                    : (bonusCountMap[task.id] ?? 0) > 0
-                  const takenByChild = task.upForGrabs
-                    ? bonusTakenByChildByTaskKey.get(taskKey)
-                    : activeProfile.childName
-                  return (
-                  <li key={task.id} className={`bonus-compact-task task-status-${alreadyTaken ? 'done' : 'new'}`}>
+              ? managedBonusTasks.map((task) => (
+                  <li key={task.key} className="bonus-compact-task">
                     <div className="bonus-compact-content">
                       <div className="bonus-compact-top">
                         <strong className="bonus-task-name">{task.name}</strong>
                         <span className="bonus-compact-points">{task.points} poeng</span>
                         {task.upForGrabs && <span className="mini bonus-task-shared">Up for grabs</span>}
-                        {task.repeatEachPeriod === false && (
-                          <span className="mini bonus-task-shared">
-                            {taskAvailableThisPeriod ? 'Engangsoppgave' : 'Engangsoppgave · utløpt'}
-                          </span>
-                        )}
+                        {task.repeatEachPeriod === false && <span className="mini bonus-task-shared">Engangsoppgave</span>}
                       </div>
-                      <div className="bonus-compact-bottom">
-                        <p className="mini task-applies-to" title={alreadyTaken
-                          ? task.upForGrabs ? `Tatt av ${takenByChild ?? 'noen'}` : 'Gjort denne perioden'
-                          : 'Ikke tatt ennå'}>
-                          <span className="bonus-task-label">Opprettet ekstraoppgave</span>
-                          {' · '}
-                          {getChildrenForTask('bonus', task.name, task.points).join(', ') || 'Ingen'}
-                          {alreadyTaken && ' · Utført'}
-                        </p>
-                        <button
-                          type="button"
-                          className="danger"
-                          disabled={!canManageTaskSetup}
-                          onClick={() => removeBonusTask(task.id)}
-                        >
-                          Slett
-                        </button>
-                      </div>
+                      <ul className="task-assignment-list">
+                        {task.assignments.map((assignment) => (
+                          <li key={`${assignment.profileId}:${assignment.taskId}`} className={`task-assignment task-status-${assignment.completed ? 'done' : 'new'}`}>
+                            <strong>{assignment.childName}</strong>
+                            <span className="mini">
+                              {!assignment.available
+                                ? 'Engangsoppgave · utløpt'
+                                : task.upForGrabs && assignment.completed
+                                  ? `Tatt av ${assignment.takenByChild ?? 'noen'}`
+                                  : assignment.completed ? 'Utført denne perioden' : 'Ikke tatt ennå'}
+                            </span>
+                            <button
+                              type="button"
+                              className="danger"
+                              onClick={() => updateProfileById(assignment.profileId, (profile) => ({
+                                ...profile,
+                                bonusTasks: profile.bonusTasks.filter((item) => item.id !== assignment.taskId),
+                              }))}
+                            >
+                              Slett
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
                     </div>
                   </li>
-                  )
-                })
+                ))
               : sharedBonusTasks.filter(task => !isChildMode || activeProfileBonusTaskByKey.has(task.key)).map((task) => {
                   const alreadyTaken = task.upForGrabs
                     ? (sharedBonusCountByTaskKey.get(task.key) ?? 0) > 0
@@ -3896,6 +4020,9 @@ function App({ cloud, onChangeCloudPassword }: { cloud?: CloudContext; onChangeC
                   )
                 })}
           </ul>
+          {canManageTaskSetup && managedBonusTasks.length === 0 && (
+            <p className="mini">Ingen ekstraoppgaver er lagt til ennå.</p>
+          )}
         </div>
         )}
           {state.parentSettings.penaltyEnabled && (

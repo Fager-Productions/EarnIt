@@ -678,6 +678,23 @@ h2 {
 	background: #2a9d8f;
 }
 
+.module-child-settings .settings-grid {
+	grid-template-columns: repeat(2, minmax(0, 1fr));
+	align-items: start;
+}
+
+.module-child-settings .settings-grid > label {
+	align-content: start;
+}
+
+.module-child-settings .settings-grid > label:not(.remember-check) {
+	grid-template-rows: minmax(2.8em, auto) auto auto;
+}
+
+.module-child-settings .settings-grid > .period-chip {
+	grid-column: 1 / -1;
+}
+
 .children-code-grid {
 	display: grid;
 	gap: 10px;
@@ -755,6 +772,10 @@ h2 {
 
 .module-levels .module-glyph {
 	background: #0f766e;
+}
+
+.bonus-level-child-selector {
+	max-width: 420px;
 }
 
 .level-row {
@@ -873,6 +894,12 @@ h2 {
 
 .parent-tools > .module-security {
 	order: 6;
+}
+
+@media (min-width: 1041px) {
+	.module-interest {
+		align-content: start;
+	}
 }
 
 .all-children-grid {
@@ -1638,6 +1665,26 @@ details[open] > .registrations-summary {
 	gap: 8px;
 }
 
+.task-assignment-list {
+	display: grid;
+	gap: 6px;
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.task-list .task-assignment {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto auto;
+	gap: 8px;
+	padding: 7px 8px;
+	border-radius: 8px;
+}
+
+.task-assignment > strong {
+	overflow-wrap: anywhere;
+}
+
 .bonus-compact-bottom .task-applies-to {
 	margin: 0;
 	font-size: 0.8rem;
@@ -1851,6 +1898,14 @@ button:hover {
 		grid-template-columns: 1fr;
 	}
 
+	.module-child-settings .settings-grid {
+		grid-template-columns: 1fr;
+	}
+
+	.module-child-settings .settings-grid > label:not(.remember-check) {
+		grid-template-rows: none;
+	}
+
 	.summary-panel-list {
 		grid-template-columns: 1fr;
 	}
@@ -1982,6 +2037,21 @@ button:hover {
 
 	.mandatory-compact-top {
 		grid-template-columns: minmax(0, 1fr);
+	}
+
+	.task-list .task-assignment {
+		grid-template-columns: minmax(0, 1fr) auto;
+	}
+
+	.task-assignment .mandatory-task-progress,
+	.task-assignment > .mini {
+		grid-column: 1;
+		justify-self: start;
+	}
+
+	.task-assignment > button {
+		grid-column: 2;
+		grid-row: 1 / span 2;
 	}
 
 	.bonus-compact-top {
